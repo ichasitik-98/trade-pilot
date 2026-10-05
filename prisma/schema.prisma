@@ -1,0 +1,449 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum TradeDirection {
+  LONG
+  SHORT
+}
+
+enum TradeStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
+
+enum SignalStatus {
+  BLOCKED
+  NO_SETUP
+  WEAK
+  WATCH
+  VALID_SETUP
+  STRONG_SETUP
+  VERY_STRONG_SETUP
+}
+
+enum MarketBias {
+  BULLISH
+  BEARISH
+  NEUTRAL
+}
+
+enum AssetClass {
+  FOREX
+  METAL
+  CRYPTO
+  INDEX
+  STOCK
+  OTHER
+}
+
+model User {
+  id              String           @id @default(uuid())
+  email           String           @unique
+  name            String
+  passwordHash    String
+  role            Role             @default(USER)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  tradingAccounts TradingAccount[]
+  trades          Trade[]
+  tradeSetups     TradeSetup[]
+  watchlists      Watchlist[]
+  journalEntries  JournalEntry[]
+  signalRuns      SignalRun[]
+  aiAnalyses      AiAnalysis[]
+  auditLogs       AuditLog[]
+
+  @@index([email])
+}
+
+model TradingAccount {
+  id              String            @id @default(uuid())
+  userId          String
+  name            String
+  broker          String            @default("Demo Broker")
+  accountNumber   String?
+  currency        String            @default("USD")
+  balance         Decimal           @default(10000.00) @db.Decimal(12, 2)
+  equity          Decimal           @default(10000.00) @db.Decimal(12, 2)
+  isDefault       Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trades          Trade[]
+  accountSnapshots AccountSnapshot[]
+  riskSetting     RiskSetting?
+
+  @@index([userId])
+}
+
+model RiskSetting {
+  id                     String         @id @default(uuid())
+  accountId              String         @unique
+  riskPerTradePercent    Decimal        @default(1.00) @db.Decimal(5, 2)
+  maxDailyRiskPercent    Decimal        @default(3.00) @db.Decimal(5, 2)
+  maxPortfolioRiskPercent Decimal       @default(5.00) @db.Decimal(5, 2)
+  minRiskRewardRatio     Decimal        @default(1.50) @db.Decimal(5, 2)
+  maxOpenPositions       Int            @default(5)
+  account                TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+model TradeSetup {
+  id          String   @id @default(uuid())
+  userId      String
+  name        String
+  description String?
+  winRate     Decimal? @db.Decimal(5, 2)
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trades      Trade[]
+
+  @@index([userId])
+}
+
+model Trade {
+  id               String            @id @default(uuid())
+  userId           String
+  accountId        String
+  setupId          String?
+  pair             String
+  direction        TradeDirection
+  status           TradeStatus       @default(OPEN)
+  timeframe        String            @default("H1")
+  tradingSession   String            @default("London")
+  entryPrice       Decimal           @db.Decimal(14, 5)
+  exitPrice        Decimal?          @db.Decimal(14, 5)
+  stopLoss         Decimal           @db.Decimal(14, 5)
+  takeProfit       Decimal?          @db.Decimal(14, 5)
+  lotSize          Decimal           @db.Decimal(10, 2)
+  riskPercent      Decimal           @default(1.00) @db.Decimal(5, 2)
+  riskAmount       Decimal           @default(0.00) @db.Decimal(12, 2)
+  grossPnL         Decimal?          @db.Decimal(12, 2)
+  fees             Decimal           @default(0.00) @db.Decimal(10, 2)
+  netPnL           Decimal?          @db.Decimal(12, 2)
+  pnlPercent       Decimal?          @db.Decimal(8, 2)
+  rMultiple        Decimal?          @db.Decimal(8, 2)
+  entryTime        DateTime          @default(now())
+  exitTime         DateTime?
+  setup            String?
+  entryReason      String?
+  exitReason       String?
+  psychology       String[]          @default([])
+  mistakeTags      String[]          @default([])
+  notes            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account          TradingAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tradeSetup       TradeSetup?       @relation(fields: [setupId], references: [id], onDelete: SetNull)
+  screenshots      TradeScreenshot[]
+  journalEntry     JournalEntry?
+
+  @@index([userId])
+  @@index([accountId])
+  @@index([pair])
+  @@index([timeframe])
+  @@index([status])
+  @@index([entryTime])
+  @@index([exitTime])
+}
+
+model TradeScreenshot {
+  id        String   @id @default(uuid())
+  tradeId   String
+  type      String   // "BEFORE" or "AFTER"
+  url       String
+  caption   String?
+  createdAt DateTime @default(now())
+  trade     Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+
+  @@index([tradeId])
+}
+
+model JournalEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  tradeId   String?  @unique
+  date      DateTime @default(now())
+  title     String
+  content   String
+  mood      String?
+  rating    Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trade     Trade?   @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([date])
+}
+
+model Watchlist {
+  id        String   @id @default(uuid())
+  userId    String
+  pair      String
+  notes     String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, pair])
+  @@index([userId])
+  @@index([pair])
+}
+
+model Instrument {
+  id              String         @id @default(uuid())
+  symbol          String         @unique
+  displayName     String
+  assetClass      AssetClass     @default(FOREX)
+  baseCurrency    String
+  quoteCurrency   String
+  pipSize         Decimal        @default(0.0001) @db.Decimal(10, 5)
+  tickSize        Decimal        @default(0.00001) @db.Decimal(10, 5)
+  contractSize    Decimal        @default(100000.0) @db.Decimal(14, 2)
+  pricePrecision  Int            @default(4)
+  volumePrecision Int            @default(2)
+  isActive        Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  candles         MarketCandle[]
+
+  @@index([symbol])
+  @@index([assetClass])
+}
+
+model ProviderSymbolMapping {
+  id             String   @id @default(uuid())
+  provider       String
+  internalSymbol String
+  externalSymbol String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([provider, internalSymbol])
+  @@index([provider, externalSymbol])
+}
+
+model MarketCandle {
+  id           String      @id @default(uuid())
+  instrumentId String?
+  symbol       String      @default("EURUSD")
+  pair         String
+  timeframe    String
+  timestamp    DateTime
+  open         Decimal     @db.Decimal(14, 5)
+  high         Decimal     @db.Decimal(14, 5)
+  low          Decimal     @db.Decimal(14, 5)
+  close        Decimal     @db.Decimal(14, 5)
+  volume       Decimal     @db.Decimal(18, 4)
+  source       String      @default("DEMO")
+  isClosed     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  instrument   Instrument? @relation(fields: [instrumentId], references: [id], onDelete: SetNull)
+
+  @@unique([symbol, timeframe, timestamp])
+  @@index([symbol])
+  @@index([pair])
+  @@index([timeframe])
+  @@index([timestamp])
+  @@index([instrumentId, timeframe, timestamp])
+}
+
+model TechnicalIndicator {
+  id                 String   @id @default(uuid())
+  symbol             String   @default("EURUSD")
+  pair               String
+  timeframe          String
+  timestamp          DateTime
+  sma20              Decimal? @db.Decimal(14, 5)
+  sma50              Decimal? @db.Decimal(14, 5)
+  sma200             Decimal? @db.Decimal(14, 5)
+  ema20              Decimal? @db.Decimal(14, 5)
+  ema50              Decimal? @db.Decimal(14, 5)
+  ema200             Decimal? @db.Decimal(14, 5)
+  rsi14              Decimal? @db.Decimal(8, 2)
+  macd               Decimal? @db.Decimal(10, 5)
+  macdSignal         Decimal? @db.Decimal(10, 5)
+  macdHistogram      Decimal? @db.Decimal(10, 5)
+  atr14              Decimal? @db.Decimal(14, 5)
+  atrPercent         Decimal? @db.Decimal(8, 4)
+  bbUpper            Decimal? @db.Decimal(14, 5)
+  bbMiddle           Decimal? @db.Decimal(14, 5)
+  bbLower            Decimal? @db.Decimal(14, 5)
+  bbWidth            Decimal? @db.Decimal(8, 4)
+  adx14              Decimal? @db.Decimal(8, 2)
+  plusDI             Decimal? @db.Decimal(8, 2)
+  minusDI            Decimal? @db.Decimal(8, 2)
+  calculatedAt       DateTime @default(now())
+  calculationVersion String   @default("1.0.0")
+
+  @@unique([symbol, timeframe, timestamp])
+  @@index([symbol])
+  @@index([pair])
+  @@index([timeframe])
+  @@index([timestamp])
+}
+
+model MarketDataStatus {
+  id                  String    @id @default(uuid())
+  symbol              String
+  timeframe           String
+  lastCandleTimestamp DateTime?
+  lastSuccessfulSync  DateTime?
+  provider            String    @default("DEMO")
+  status              String    @default("LIVE") // LIVE, DELAYED, STALE, ERROR, NO_DATA
+  dataQualityScore    Int       @default(100)
+  errorMessage        String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@unique([symbol, timeframe])
+  @@index([symbol])
+}
+
+model MarketDataGap {
+  id                String    @id @default(uuid())
+  symbol            String
+  timeframe         String
+  expectedTimestamp DateTime
+  detectedAt        DateTime  @default(now())
+  resolvedAt        DateTime?
+  status            String    @default("OPEN") // OPEN, RESOLVED, IGNORED
+
+  @@index([symbol, timeframe])
+  @@index([status])
+}
+
+model MarketAnalysis {
+  id                 String     @id @default(uuid())
+  symbol             String     @default("EURUSD")
+  pair               String
+  timeframe          String     @default("H1")
+  timestamp          DateTime   @default(now())
+  overallBias        MarketBias @default(NEUTRAL)
+  bias               MarketBias @default(NEUTRAL)
+  trend              String     @default("NEUTRAL")
+  trendStrength      Decimal    @default(50.00) @db.Decimal(5, 2)
+  structure          String     @default("SIDEWAYS")
+  structureState     String     @default("SIDEWAYS")
+  momentum           String     @default("NEUTRAL")
+  volatility         String     @default("NORMAL")
+  currentPrice       Decimal    @default(1.00000) @db.Decimal(14, 5)
+  nearestSupport     Decimal?   @db.Decimal(14, 5)
+  nearestResistance  Decimal?   @db.Decimal(14, 5)
+  keySupport         Decimal?   @db.Decimal(14, 5)
+  keyResistance      Decimal?   @db.Decimal(14, 5)
+  supportDetails     Json?
+  resistanceDetails  Json?
+  multiTimeframe     Json?
+  dataQuality        Int        @default(100)
+  dataStatus         String     @default("LIVE")
+  explanation        String     @default("Market analysis complete")
+  lastUpdated        DateTime   @default(now())
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@index([symbol])
+  @@index([pair])
+  @@index([timestamp])
+}
+
+model SignalRun {
+  id                 String            @id @default(uuid())
+  userId             String
+  pair               String
+  timeframe          String
+  timestamp          DateTime          @default(now())
+  direction          TradeDirection
+  score              Int
+  trendScore         Int
+  structureScore     Int
+  momentumScore      Int
+  srScore            Int
+  volatilityScore    Int
+  rrScore            Int
+  confirmationScore  Int
+  entryPrice         Decimal           @db.Decimal(14, 5)
+  stopLoss           Decimal           @db.Decimal(14, 5)
+  takeProfit1        Decimal           @db.Decimal(14, 5)
+  takeProfit2        Decimal           @db.Decimal(14, 5)
+  riskReward         Decimal           @db.Decimal(6, 2)
+  status             SignalStatus
+  explanation        String
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  components         SignalComponent[]
+
+  @@index([userId])
+  @@index([pair])
+  @@index([timeframe])
+  @@index([timestamp])
+  @@index([status])
+}
+
+model SignalComponent {
+  id          String    @id @default(uuid())
+  signalRunId String
+  component   String
+  rawValue    String
+  score       Int
+  weight      Int
+  reason      String
+  signalRun   SignalRun @relation(fields: [signalRunId], references: [id], onDelete: Cascade)
+
+  @@index([signalRunId])
+}
+
+model AccountSnapshot {
+  id        String         @id @default(uuid())
+  accountId String
+  date      DateTime       @default(now())
+  balance   Decimal        @db.Decimal(12, 2)
+  equity    Decimal        @db.Decimal(12, 2)
+  openPnL   Decimal        @db.Decimal(12, 2)
+  closedPnL Decimal        @db.Decimal(12, 2)
+  account   TradingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([date])
+}
+
+model AiAnalysis {
+  id        String   @id @default(uuid())
+  userId    String
+  query     String
+  response  String
+  context   String?
+  timestamp DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([timestamp])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  ipAddress String?
+  timestamp DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([timestamp])
+  @@index([action])
+}

@@ -1,0 +1,49 @@
+{
+  "createdAt": "2026-10-03T12:09:06.471Z",
+  "counts": {
+    "marketCandles": 100,
+    "technicalIndicators": 1,
+    "marketAnalyses": 0,
+    "marketDataStatuses": 0,
+    "marketDataGaps": 0,
+    "signalRuns": 0,
+    "signalComponents": 0
+  },
+  "records": {
+    "demoCandles": [],
+    "demoIndicators": [
+      {
+        "id": "9138c3a9-493d-40d6-9a92-f31fbd6a0025",
+        "symbol": "XAUUSD",
+        "pair": "XAUUSD",
+        "timeframe": "H1",
+        "timestamp": "2026-10-03T12:00:00.000Z",
+        "sma20": "4138.41062",
+        "sma50": "4159.73591",
+        "sma200": null,
+        "ema20": "4142.44618",
+        "ema50": "4153.41461",
+        "ema200": null,
+        "rsi14": "41.1",
+        "macd": "-6.48476",
+        "macdSignal": "-7.666",
+        "macdHistogram": "1.18124",
+        "atr14": "6.22222",
+        "atrPercent": "0.1504",
+        "bbUpper": "4143.87425",
+        "bbMiddle": "4138.41062",
+        "bbLower": "4132.94699",
+        "bbWidth": "0.0026",
+        "adx14": "14.63",
+        "plusDI": "16.74",
+        "minusDI": "22.75",
+        "calculatedAt": "2026-10-03T12:05:01.647Z",
+        "calculationVersion": "1.0.0"
+      }
+    ],
+    "demoAnalyses": [],
+    "demoStatuses": [],
+    "demoGaps": [],
+    "demoSignalRuns": []
+  }
+}
