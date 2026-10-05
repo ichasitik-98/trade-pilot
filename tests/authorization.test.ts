@@ -56,6 +56,10 @@ describe('Authentication & Authorization / IDOR Prevention Tests', () => {
     expect(session).not.toBeNull();
     expect(session?.userId).toBe('u1');
 
+    // Tampered signature must be rejected
+    const tamperedToken = token.slice(0, -4) + 'XXXX';
+    expect(getSession(tamperedToken)).toBeNull();
+
     destroySession(token);
     expect(getSession(token)).toBeNull();
   });

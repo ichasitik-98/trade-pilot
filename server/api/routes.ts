@@ -42,6 +42,23 @@ import { Trade, TradeDirection, TradeStatus, Timeframe } from '../types/index.ts
 
 export const apiRouter = Router();
 
+// Express 4 Async Error Forwarding Wrapper:
+// Automatically forwards any rejected promise from async route handlers or middleware to next(err).
+const asyncMethods = ['get', 'post', 'put', 'patch', 'delete'] as const;
+for (const method of asyncMethods) {
+  const original = (apiRouter as any)[method].bind(apiRouter);
+  (apiRouter as any)[method] = (path: any, ...handlers: any[]) => {
+    const wrapped = handlers.map((fn) =>
+      typeof fn === 'function'
+        ? (req: Request, res: Response, next: any) => {
+            Promise.resolve(fn(req, res, next)).catch(next);
+          }
+        : fn
+    );
+    return original(path, ...wrapped);
+  };
+}
+
 // Database Health Check Endpoint (Public / Monitoring)
 apiRouter.get('/health/database', async (req: Request, res: Response) => {
   try {
