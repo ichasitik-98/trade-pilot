@@ -42,6 +42,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
   onTimeframeChange,
   supportLevel,
   resistanceLevel,
+  dataStatus,
   isRefreshing,
   onRefresh,
 }) => {
@@ -133,25 +134,40 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
 
       {/* Main Interactive Chart Box */}
       <div className="p-3 sm:p-4 rounded-2xl bg-zinc-900/90 border border-zinc-800/80 shadow-xl space-y-2">
-        <div className="flex items-center justify-between text-xs text-zinc-400 pb-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-400 pb-1">
           <div className="flex items-center gap-2">
             <span className="font-bold text-zinc-200">
-              {symbol} &bull; {chartType}
+              {symbol} &bull; {timeframe} &bull; {chartType}
             </span>
             <span className="text-[11px] font-mono text-zinc-500">
-              ({visibleCandles.length} candles visible)
+              ({visibleCandles.length} of {adaptedCandles.length} candles)
             </span>
+            {visibleCandles.length > 0 && (
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                  dataStatus === 'STALE'
+                    ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                }`}
+              >
+                {isRefreshing
+                  ? 'UPDATING FEED...'
+                  : dataStatus === 'STALE'
+                  ? 'REAL DATA • STALE'
+                  : 'REAL DATA • CURRENT'}
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-3 text-[11px] font-mono">
             {visibleIndicators.support && supportLevel && (
               <span className="text-emerald-400 font-bold">
-                Support: ${supportLevel.toFixed(symbol.includes('JPY') ? 2 : 4)}
+                Support: ${supportLevel.toFixed(symbol.includes('JPY') || symbol === 'XAUUSD' ? 2 : 4)}
               </span>
             )}
             {visibleIndicators.resistance && resistanceLevel && (
               <span className="text-rose-400 font-bold">
-                Resistance: ${resistanceLevel.toFixed(symbol.includes('JPY') ? 2 : 4)}
+                Resistance: ${resistanceLevel.toFixed(symbol.includes('JPY') || symbol === 'XAUUSD' ? 2 : 4)}
               </span>
             )}
           </div>
@@ -166,6 +182,8 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
           resistanceLevel={visibleIndicators.resistance ? resistanceLevel : null}
           showCrosshair={showCrosshair}
           symbol={symbol}
+          timeframe={timeframe}
+          isRefreshing={isRefreshing}
         />
       </div>
 

@@ -148,7 +148,7 @@ export class CandleValidator {
           low: Number(c.low),
           close: Number(c.close),
           volume: Number(c.volume ?? 0),
-          source: c.source || 'DEMO',
+          source: c.source || 'TWELVEDATA',
           isClosed: c.isClosed !== false,
         });
       } else {

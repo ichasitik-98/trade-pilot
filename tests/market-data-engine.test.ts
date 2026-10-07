@@ -278,6 +278,19 @@ describe('6. Data Freshness, Quality & Gap Detection', () => {
     expect(degradedScore).toBeLessThan(75);
   });
 
+  it('evaluates live candle freshness as current and not stale when within timeframe window', () => {
+    const freshCheck = MarketDataSyncService.checkFreshness(Date.now() - 15 * 60 * 1000, 'H1', 'FOREX');
+    expect(freshCheck.isStale).toBe(false);
+    expect(freshCheck.isCurrent).toBe(true);
+    expect(freshCheck.status).toBe('FRESH');
+    expect(freshCheck.ageSeconds).toBeGreaterThanOrEqual(890);
+
+    const staleCheck = MarketDataSyncService.checkFreshness(Date.now() - 10 * 24 * 3600 * 1000, 'H1', 'FOREX');
+    expect(staleCheck.isStale).toBe(true);
+    expect(staleCheck.isCurrent).toBe(false);
+    expect(staleCheck.status).toBe('STALE');
+  });
+
   it('identifies trading sessions correctly based on UTC time', () => {
     // 04:00 UTC -> ASIA
     const asiaDate = new Date('2026-03-02T04:00:00Z');

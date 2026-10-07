@@ -12,7 +12,19 @@ export type SignalStatus =
 export type MarketBias = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 export type AssetClass = 'FOREX' | 'METAL' | 'CRYPTO' | 'INDEX' | 'STOCK' | 'OTHER';
 export type Timeframe = 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1' | 'W1';
-export type MarketDataStatusCode = 'LIVE' | 'FRESH' | 'DELAYED' | 'STALE' | 'DEMO' | 'ERROR' | 'NO_DATA' | 'UNAVAILABLE';
+export type MarketDataStatusCode =
+  | 'LIVE'
+  | 'FRESH'
+  | 'CURRENT'
+  | 'UP_TO_DATE'
+  | 'REFRESHING'
+  | 'MARKET_CLOSED'
+  | 'DELAYED'
+  | 'STALE'
+  | 'DEMO'
+  | 'ERROR'
+  | 'NO_DATA'
+  | 'UNAVAILABLE';
 export type TradingSession = 'ASIA' | 'LONDON' | 'NEW_YORK' | 'OVERLAP' | 'OTHER';
 
 export interface TimeframeConfig {

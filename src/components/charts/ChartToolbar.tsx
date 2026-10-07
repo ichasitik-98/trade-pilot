@@ -16,6 +16,7 @@ import {
   ChevronDown,
   Layers,
   Sparkles,
+  RotateCcw,
 } from 'lucide-react';
 import { SupportedChartType, IndicatorVisibility, IndicatorPanelsVisibility } from './types.ts';
 
@@ -67,6 +68,8 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   onZoomIn,
   onZoomOut,
   onResetZoom,
+  isRefreshing,
+  onRefresh,
 }) => {
   const [indicatorsOpen, setIndicatorsOpen] = useState(false);
   const [panelsOpen, setPanelsOpen] = useState(false);
@@ -319,6 +322,20 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
         </div>
+
+        {/* Direct Chart Refresh Button */}
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            title="Refresh latest real market candles"
+            aria-label="Refresh chart market data"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:border-emerald-500/40 text-zinc-300 hover:text-emerald-400 transition cursor-pointer disabled:opacity-50"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-emerald-400' : ''}`} />
+            <span className="hidden sm:inline text-[11px]">{isRefreshing ? 'Syncing' : 'Refresh'}</span>
+          </button>
+        )}
       </div>
     </div>
   );

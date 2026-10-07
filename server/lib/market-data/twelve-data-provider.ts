@@ -39,6 +39,7 @@ export class TwelveDataProvider implements MarketDataProvider {
   private apiKey: string;
   private apiUrl: string;
   private appTimezone: string;
+  private inFlightRequests = new Map<string, Promise<any>>();
 
   // Fallback canonical mapping if DB is initializing
   public static readonly CANONICAL_SYMBOL_MAP: Record<string, string> = {
@@ -151,6 +152,25 @@ export class TwelveDataProvider implements MarketDataProvider {
       );
     }
 
+    const dedupeKey = `${endpoint}?${new URLSearchParams(params).toString()}`;
+    const existingInFlight = this.inFlightRequests.get(dedupeKey);
+    if (existingInFlight) {
+      return existingInFlight;
+    }
+
+    const requestPromise = this.executeTwelveDataFetch(endpoint, params, maxRetries).finally(() => {
+      this.inFlightRequests.delete(dedupeKey);
+    });
+
+    this.inFlightRequests.set(dedupeKey, requestPromise);
+    return requestPromise;
+  }
+
+  private async executeTwelveDataFetch(
+    endpoint: string,
+    params: Record<string, string>,
+    maxRetries = 2
+  ): Promise<any> {
     const query = new URLSearchParams({
       ...params,
       apikey: this.apiKey,
@@ -165,7 +185,7 @@ export class TwelveDataProvider implements MarketDataProvider {
       attempt++;
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
+        const timeout = setTimeout(() => controller.abort(), 8000);
 
         const response = await fetch(fullUrl, {
           signal: controller.signal,
@@ -371,6 +391,10 @@ export class TwelveDataProvider implements MarketDataProvider {
     }
 
     // Map raw records into canonical UTC-normalized candles
+    // Distinguish completed candles (utcTimestamp + durationMs <= nowMs) from currently forming candle
+    const durationSec = TIMEFRAMES[timeframe]?.durationSeconds ?? 3600;
+    const durationMs = durationSec * 1000;
+    const nowMs = Date.now();
     const rawCandles: any[] = [];
     for (const v of data.values) {
       try {
@@ -380,6 +404,7 @@ export class TwelveDataProvider implements MarketDataProvider {
         const low = parseFloat(v.low);
         const close = parseFloat(v.close);
         const volume = parseFloat(v.volume || '0');
+        const isClosed = utcTimestamp + durationMs <= nowMs;
 
         rawCandles.push({
           symbol: sym,
@@ -392,7 +417,7 @@ export class TwelveDataProvider implements MarketDataProvider {
           close,
           volume: isNaN(volume) ? 0 : volume,
           source: 'TWELVEDATA',
-          isClosed: true,
+          isClosed,
         });
       } catch (parseErr: any) {
         // Skip malformed individual row
@@ -449,7 +474,11 @@ export class TwelveDataProvider implements MarketDataProvider {
     const change24h = data.percent_change ? Number(parseFloat(data.percent_change).toFixed(2)) : 0;
     const high24h = data.high ? Number(parseFloat(data.high).toFixed(decimals)) : price;
     const low24h = data.low ? Number(parseFloat(data.low).toFixed(decimals)) : price;
-    const timestamp = data.timestamp ? data.timestamp * 1000 : Date.now();
+    const timestamp = data.timestamp
+      ? Number(data.timestamp) * 1000
+      : data.datetime
+      ? parseToUtcTimestamp(data.datetime)
+      : 0;
 
     return {
       symbol: sym,

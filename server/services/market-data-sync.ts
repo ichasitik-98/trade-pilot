@@ -19,8 +19,11 @@ import { parseToUtcTimestamp, toUtcIsoString } from '../utils/timezone.ts';
 export interface FreshnessCheckResult {
   status: MarketDataStatusCode;
   isStale: boolean;
+  isCurrent: boolean;
   freshnessMs: number;
+  ageSeconds: number;
   thresholdMs: number;
+  lastCandleTimestamp?: string | null;
 }
 
 export interface SyncMarketDataParams {
@@ -54,20 +57,24 @@ export interface SyncMarketDataSummary {
 }
 
 export class MarketDataSyncService {
+  private static inFlightSyncs = new Map<string, Promise<any>>();
+  private static lastAttemptedSyncMs = new Map<string, number>();
+  private static rateLimitUntilMs = 0;
+
   /**
-   * Configurable freshness thresholds per timeframe
+   * Configurable freshness thresholds per timeframe (measured from candle UTC OPEN time)
    */
   public static getFreshnessThresholdMs(timeframe: Timeframe): number {
     switch (timeframe) {
-      case 'M1': return 3 * 60 * 1000; // 3 minutes
-      case 'M5': return 10 * 60 * 1000; // 10 minutes
-      case 'M15': return 30 * 60 * 1000; // 30 minutes
-      case 'M30': return 60 * 60 * 1000; // 1 hour
-      case 'H1': return 2 * 3600 * 1000; // 2 hours
-      case 'H4': return 8 * 3600 * 1000; // 8 hours
-      case 'D1': return 48 * 3600 * 1000; // 48 hours
+      case 'M1': return 5 * 60 * 1000; // 5 minutes
+      case 'M5': return 15 * 60 * 1000; // 15 minutes
+      case 'M15': return 45 * 60 * 1000; // 45 minutes
+      case 'M30': return 90 * 60 * 1000; // 90 minutes
+      case 'H1': return 3 * 3600 * 1000; // 3 hours
+      case 'H4': return 12 * 3600 * 1000; // 12 hours
+      case 'D1': return 72 * 3600 * 1000; // 72 hours
       case 'W1': return 14 * 86400 * 1000; // 14 days
-      default: return 2 * 3600 * 1000;
+      default: return 3 * 3600 * 1000;
     }
   }
 
@@ -89,22 +96,35 @@ export class MarketDataSyncService {
    */
   public static checkFreshness(
     lastCandleTimestamp: number | null | undefined,
-    timeframe: Timeframe
+    timeframe: Timeframe,
+    assetClass: AssetClass = 'FOREX'
   ): FreshnessCheckResult {
     const baseThresholdMs = this.getFreshnessThresholdMs(timeframe);
-    const isWeekendNow = this.isForexWeekendClosure(Date.now());
-    const thresholdMs = isWeekendNow ? Math.max(baseThresholdMs, 60 * 3600 * 1000) : baseThresholdMs;
+    const nowMs = Date.now();
+    const isWeekendNow = assetClass !== 'CRYPTO' && this.isForexWeekendClosure(nowMs);
+    const utcDay = new Date(nowMs).getUTCDay();
+    const isPostWeekendMonday = assetClass !== 'CRYPTO' && utcDay === 1 && (timeframe === 'D1' || timeframe === 'H4');
+
+    const thresholdMs = isWeekendNow
+      ? Math.max(baseThresholdMs, 84 * 3600 * 1000)
+      : isPostWeekendMonday
+      ? Math.max(baseThresholdMs, 96 * 3600 * 1000)
+      : baseThresholdMs;
 
     if (!lastCandleTimestamp || lastCandleTimestamp <= 0) {
       return {
         status: 'NO_DATA',
         isStale: true,
+        isCurrent: false,
         freshnessMs: Infinity,
+        ageSeconds: Infinity,
         thresholdMs,
+        lastCandleTimestamp: null,
       };
     }
 
-    const freshnessMs = Math.max(0, Date.now() - lastCandleTimestamp);
+    const freshnessMs = Math.max(0, nowMs - lastCandleTimestamp);
+    const ageSeconds = Math.floor(freshnessMs / 1000);
     const isStale = freshnessMs > thresholdMs;
 
     let status: MarketDataStatusCode = 'FRESH';
@@ -112,15 +132,18 @@ export class MarketDataSyncService {
       status = 'DEMO';
     } else if (isStale) {
       status = 'STALE';
-    } else if (!isWeekendNow && freshnessMs > thresholdMs * 0.5) {
+    } else if (!isWeekendNow && freshnessMs > thresholdMs * 0.75) {
       status = 'DELAYED';
     }
 
     return {
       status,
       isStale,
+      isCurrent: !isStale,
       freshnessMs,
+      ageSeconds,
       thresholdMs,
+      lastCandleTimestamp: new Date(lastCandleTimestamp).toISOString(),
     };
   }
 
@@ -300,15 +323,17 @@ export class MarketDataSyncService {
       insertedCount = res.upsertedCount;
     }
 
-    // Retrieve stored candles
+    // Retrieve stored candles (ensure at least 250 lookback for 200-period indicator calculation)
+    const dbLookback = Math.max(targetCount, 250);
     const storedCandles = await db.getCandles({
       symbol: sym,
       timeframe: tf,
-      limit: targetCount,
+      limit: dbLookback,
     });
 
-    // 11. Detect gaps
-    const detectedGaps = this.detectGaps(storedCandles, tf, assetClass);
+    // 11. Detect gaps on the recent window
+    const recentWindow = storedCandles.slice(-Math.min(storedCandles.length, 100));
+    const detectedGaps = this.detectGaps(recentWindow, tf, assetClass);
     for (const g of detectedGaps) {
       await db.addMarketDataGap({
         symbol: sym,
@@ -321,11 +346,11 @@ export class MarketDataSyncService {
 
     // Freshness & Data Quality
     const latestCandle = storedCandles[storedCandles.length - 1];
-    const freshness = this.checkFreshness(latestCandle?.timestamp, tf);
+    const freshness = this.checkFreshness(latestCandle?.timestamp, tf, assetClass);
 
     const dataQuality = this.calculateDataQualityScore({
       candleCount: storedCandles.length,
-      targetCount,
+      targetCount: Math.min(targetCount, 250),
       invalidCount,
       gapsCount: detectedGaps.length,
       isStale: freshness.isStale,
@@ -442,14 +467,14 @@ export class MarketDataSyncService {
       low24h: Number(low24h.toFixed(decimals)),
       timestamp: latest.timestamp,
       source: 'TWELVEDATA',
-      status: 'FRESH',
+      status: 'CURRENT',
     };
   }
 
   /**
    * Synchronize historical candles for a specific symbol & timeframe.
-   * Uses persisted real Twelve Data candles in Neon PostgreSQL first unless forceSync=true
-   * or no real candles exist yet. Gracefully handles provider rate limits without crashing.
+   * Automatically refreshes from Twelve Data when stored candles are stale, missing, or when
+   * a new timeframe bar has opened, while coalescing concurrent requests and respecting rate limits.
    */
   public static async syncHistoricalCandles(
     symbol: string,
@@ -461,67 +486,141 @@ export class MarketDataSyncService {
     indicators: any;
     dataStatus: MarketDataStatus;
     dataQuality: number;
+    freshness: FreshnessCheckResult;
   }> {
     const sym = normalizeSymbol(symbol);
     const targetCount = count || this.getRecommendedCandleCount(timeframe);
+    const dbFetchLimit = Math.max(targetCount, 250);
+    const syncKey = `${sym}:${timeframe}`;
+
+    const inst = await db.getInstrumentBySymbol(sym);
+    const assetClass: AssetClass =
+      inst?.assetClass || (sym.startsWith('BTC') ? 'CRYPTO' : sym === 'XAUUSD' ? 'METAL' : 'FOREX');
 
     let storedCandles = await db.getCandles({
       symbol: sym,
       timeframe,
-      limit: targetCount,
+      limit: dbFetchLimit,
     });
 
-    const existingStatus = await db.getMarketDataStatus(sym, timeframe);
-    const recentlyErrored =
-      existingStatus?.status === 'ERROR' &&
-      existingStatus?.lastSuccessfulSync &&
-      Date.now() - new Date(existingStatus.lastSuccessfulSync).getTime() < 5 * 60 * 1000;
+    const latestBeforeSync = storedCandles[storedCandles.length - 1];
+    const initialFreshness = this.checkFreshness(latestBeforeSync?.timestamp, timeframe, assetClass);
+    const durationMs = (TIMEFRAMES[timeframe]?.durationSeconds ?? 3600) * 1000;
+    const isWeekendClosed = assetClass !== 'CRYPTO' && this.isForexWeekendClosure(Date.now());
+    const barHasRolledOver =
+      !isWeekendClosed &&
+      (!latestBeforeSync || Date.now() - latestBeforeSync.timestamp >= durationMs);
 
-    // Only call external Twelve Data API if explicitly forced or if DB has < 20 real candles
-    if (forceSync || (storedCandles.length < 20 && !recentlyErrored)) {
-      console.log(`[MarketDataSyncService] Syncing ${sym} [${timeframe}] (Target: ${targetCount} candles)...`);
-      try {
-        await this.syncMarketData({
+    const lastAttempt = this.lastAttemptedSyncMs.get(syncKey) || 0;
+    const cooldownMs = forceSync ? 0 : initialFreshness.isStale ? 30_000 : 60_000;
+    const isRateLimited = !forceSync && Date.now() < this.rateLimitUntilMs;
+
+    const shouldSyncFromProvider =
+      !isRateLimited &&
+      (forceSync ||
+        ((storedCandles.length < 50 || initialFreshness.isStale || barHasRolledOver) &&
+          Date.now() - lastAttempt > cooldownMs));
+
+    if (shouldSyncFromProvider) {
+      let activePromise = this.inFlightSyncs.get(syncKey);
+      if (!activePromise) {
+        this.lastAttemptedSyncMs.set(syncKey, Date.now());
+        // Use fast incremental window (60 bars) when >= 150 historical candles already exist in Neon
+        const gapBars = latestBeforeSync
+          ? Math.ceil((Date.now() - latestBeforeSync.timestamp) / durationMs)
+          : 500;
+        const fetchCount =
+          storedCandles.length >= 150 && gapBars <= 45 ? Math.min(targetCount, 60) : targetCount;
+
+        activePromise = this.syncMarketData({
           symbol: sym,
           timeframe,
-          count: targetCount,
+          count: fetchCount,
+        }).finally(() => {
+          this.inFlightSyncs.delete(syncKey);
         });
+        this.inFlightSyncs.set(syncKey, activePromise);
+      }
+
+      try {
+        await activePromise;
         storedCandles = await db.getCandles({
           symbol: sym,
           timeframe,
-          limit: targetCount,
+          limit: dbFetchLimit,
         });
       } catch (err: any) {
+        if (err?.statusCode === 429 || err?.code === 'TWELVEDATA_RATE_LIMIT') {
+          this.rateLimitUntilMs = Date.now() + 55_000;
+        }
         console.warn(`[MarketDataSyncService] Provider sync warning for ${sym} [${timeframe}]: ${err.message}`);
       }
     }
 
+    const latestCandle = storedCandles[storedCandles.length - 1];
+    const freshness = this.checkFreshness(latestCandle?.timestamp, timeframe, assetClass);
+
     const indicatorsList = await db.getTechnicalIndicators(sym, timeframe, 1);
     let indicators = indicatorsList[0] || null;
-    if (!indicators && storedCandles.length >= 20) {
+    const needsIndicatorRecompute =
+      storedCandles.length >= 20 &&
+      (!indicators ||
+        indicators.timestamp !== latestCandle?.timestamp ||
+        (storedCandles.length >= 200 && indicators.ema200 === null));
+
+    if (needsIndicatorRecompute) {
       indicators = IndicatorEngine.computeLatestSnapshot(storedCandles, sym, timeframe);
       await db.upsertTechnicalIndicators([indicators]);
     }
 
-    const latestCandle = storedCandles[storedCandles.length - 1];
-    const freshness = this.checkFreshness(latestCandle?.timestamp, timeframe);
     const currentStatus = await db.getMarketDataStatus(sym, timeframe);
+    const computedStatus: MarketDataStatusCode =
+      storedCandles.length === 0 ? 'NO_DATA' : freshness.isStale ? 'STALE' : 'FRESH';
+    const computedQuality =
+      storedCandles.length === 0
+        ? 0
+        : this.calculateDataQualityScore({
+            candleCount: storedCandles.length,
+            targetCount: Math.min(targetCount, 250),
+            invalidCount: 0,
+            gapsCount: 0,
+            isStale: freshness.isStale,
+            hasProviderError: false,
+          });
 
-    const dataStatus: MarketDataStatus = currentStatus || {
+    const dataStatus: MarketDataStatus = {
       symbol: sym,
       timeframe,
-      lastCandleTimestamp: latestCandle ? new Date(latestCandle.timestamp).toISOString() : null,
-      lastSuccessfulSync: latestCandle ? new Date().toISOString() : null,
+      lastCandleTimestamp: latestCandle
+        ? new Date(latestCandle.timestamp).toISOString()
+        : currentStatus?.lastCandleTimestamp || null,
+      lastSuccessfulSync: currentStatus?.lastSuccessfulSync || (latestCandle ? new Date().toISOString() : null),
       provider: defaultMarketDataProvider.name,
-      status: storedCandles.length === 0 ? 'NO_DATA' : freshness.isStale ? 'STALE' : 'FRESH',
-      dataQualityScore: storedCandles.length === 0 ? 0 : freshness.isStale ? 75 : 100,
+      status: computedStatus,
+      dataQualityScore: computedQuality,
+      errorMessage: computedStatus === 'FRESH' ? undefined : currentStatus?.errorMessage,
     };
 
+    if (
+      storedCandles.length > 0 &&
+      (!currentStatus ||
+        currentStatus.status !== computedStatus ||
+        currentStatus.lastCandleTimestamp !== dataStatus.lastCandleTimestamp)
+    ) {
+      await db.upsertMarketDataStatus(dataStatus);
+    }
+
+    const returnedCandles =
+      storedCandles.length > targetCount
+        ? storedCandles.slice(storedCandles.length - targetCount)
+        : storedCandles;
+
     return {
-      candles: storedCandles,
+      candles: returnedCandles,
       indicators,
       dataStatus,
-      dataQuality: storedCandles.length === 0 ? 0 : (dataStatus.dataQualityScore ?? 100),
+      dataQuality: computedQuality,
+      freshness,
     };
   }
 
@@ -531,78 +630,96 @@ export class MarketDataSyncService {
   public static async syncLatestCandles(
     symbol: string,
     timeframe: Timeframe = 'H1'
-  ): Promise<void> {
+  ): Promise<MarketCandle[]> {
     const sym = normalizeSymbol(symbol);
-    const latest = await db.getLatestCandle(sym, timeframe);
-
-    const options: any = { limit: 50 };
-    if (latest && latest.timestamp > 0) {
-      options.startTime = new Date(latest.timestamp + 1000);
-    }
-
-    try {
-      const newCandles = await defaultMarketDataProvider.getCandles(sym, timeframe, options);
-      const { validCandles } = CandleValidator.validateBatch(newCandles);
-      if (validCandles.length > 0) {
-        await db.upsertCandles(validCandles);
-      }
-    } catch (err: any) {
-      console.warn(`[MarketDataSyncService] Incremental sync error for ${sym}:`, err.message);
-    }
+    const res = await this.syncHistoricalCandles(sym, timeframe, 250, true);
+    return res.candles;
   }
 
   /**
    * Refreshes multi-timeframe analysis for a symbol and updates MarketAnalysis cache.
-   * Uses persisted real Twelve Data candles in Neon PostgreSQL by default.
-   * When forceSync=true, refreshes primary H1 timeframe from Twelve Data first.
+   * Uses persisted real Twelve Data candles in Neon PostgreSQL and automatically refreshes
+   * primary H1 timeframe if stale or when forceSync=true.
    */
-  public static async refreshSymbol(symbol: string, forceSync: boolean = false): Promise<MarketAnalysis> {
+  public static async refreshSymbol(
+    symbol: string,
+    forceSync: boolean = false,
+    activeTimeframe: Timeframe = 'H1'
+  ): Promise<MarketAnalysis> {
     const sym = normalizeSymbol(symbol);
 
     if (!forceSync) {
       const cached = await db.getMarketAnalysis(sym, 'H1');
-      if (cached && cached.dataStatus !== 'DEMO') {
+      if (
+        cached &&
+        cached.dataStatus !== 'DEMO' &&
+        cached.dataStatus !== 'STALE' &&
+        cached.dataStatus !== 'NO_DATA' &&
+        cached.currentPrice > 0 &&
+        cached.lastUpdated &&
+        Date.now() - new Date(cached.lastUpdated).getTime() < 90_000
+      ) {
         return cached;
       }
     }
 
     const inst = await db.getInstrumentBySymbol(sym);
-    const assetClass = inst?.assetClass || 'FOREX';
+    const assetClass: AssetClass =
+      inst?.assetClass || (sym.startsWith('BTC') ? 'CRYPTO' : sym === 'XAUUSD' ? 'METAL' : 'FOREX');
 
     if (forceSync) {
-      await this.syncHistoricalCandles(sym, 'H1', 100, true);
+      await this.syncHistoricalCandles(sym, activeTimeframe, 250, true);
+      if (activeTimeframe !== 'H1') {
+        await this.syncHistoricalCandles(sym, 'H1', 250, true);
+      }
     }
 
     const tfs: Timeframe[] = ['D1', 'H4', 'H1', 'M15'];
     const timeframeCandles: Partial<Record<Timeframe, Candle[]>> = {};
 
-    let overallDataQuality = 100;
-    let hasAnyRealCandles = false;
-    let worstStatus: MarketDataStatusCode = 'FRESH';
-
     const tfResults = await Promise.all(
       tfs.map(async (tf) => ({
         tf,
-        candles: await db.getCandles({ symbol: sym, timeframe: tf, limit: this.getRecommendedCandleCount(tf) }),
+        candles: await db.getCandles({ symbol: sym, timeframe: tf, limit: 250 }),
       }))
     );
 
+    let hasAnyRealCandles = false;
     for (const { tf, candles } of tfResults) {
       timeframeCandles[tf] = candles;
       if (candles.length > 0) {
         hasAnyRealCandles = true;
-        const latest = candles[candles.length - 1];
-        const freshness = this.checkFreshness(latest.timestamp, tf);
-        if (freshness.isStale) {
-          worstStatus = 'STALE';
-          overallDataQuality = Math.min(overallDataQuality, 75);
-        }
       }
     }
 
-    if (!hasAnyRealCandles) {
-      worstStatus = 'NO_DATA';
-      overallDataQuality = 0;
+    let primaryStatus: MarketDataStatusCode = 'NO_DATA';
+    let overallDataQuality = 0;
+
+    if (hasAnyRealCandles) {
+      const primaryCandles =
+        (timeframeCandles[activeTimeframe]?.length ? timeframeCandles[activeTimeframe] : undefined) ||
+        (timeframeCandles['H1']?.length ? timeframeCandles['H1'] : undefined) ||
+        (timeframeCandles['D1']?.length ? timeframeCandles['D1'] : undefined) ||
+        [];
+      const primaryTf: Timeframe = timeframeCandles[activeTimeframe]?.length
+        ? activeTimeframe
+        : timeframeCandles['H1']?.length
+        ? 'H1'
+        : 'D1';
+
+      if (primaryCandles.length > 0) {
+        const latest = primaryCandles[primaryCandles.length - 1];
+        const freshness = this.checkFreshness(latest.timestamp, primaryTf, assetClass);
+        primaryStatus = freshness.isStale ? 'STALE' : 'FRESH';
+        overallDataQuality = this.calculateDataQualityScore({
+          candleCount: primaryCandles.length,
+          targetCount: 200,
+          invalidCount: 0,
+          gapsCount: 0,
+          isStale: freshness.isStale,
+          hasProviderError: false,
+        });
+      }
     }
 
     const analysis = MultiTimeframeAnalysisService.synthesizeMarketAnalysis({
@@ -610,7 +727,7 @@ export class MarketDataSyncService {
       primaryTimeframe: 'H1',
       timeframeCandles,
       assetClass,
-      dataStatus: worstStatus,
+      dataStatus: primaryStatus,
       dataQuality: overallDataQuality,
     });
 

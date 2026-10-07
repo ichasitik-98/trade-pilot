@@ -18,8 +18,10 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
 
-  // Initialize persistent database
-  await db.init();
+  // Warm up persistent database asynchronously so port 3000 binds immediately
+  db.init().catch((err) => {
+    console.warn('[Server Startup] Initial database warm-up deferred:', err.message);
+  });
 
   // API router
   app.use('/api', apiRouter);

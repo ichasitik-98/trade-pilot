@@ -797,6 +797,11 @@ apiRouter.get('/market/scanner', authenticate, async (_req: Request, res: Respon
 
         const analysis = await MarketDataSyncService.refreshSymbol(sym, false);
         const latestPrice = MarketDataSyncService.getLatestPriceFromCandles(sym, candles);
+        const latestCandle = candles[candles.length - 1];
+        const statusLabel =
+          analysis.dataStatus === 'FRESH' || analysis.dataStatus === 'LIVE' || analysis.dataStatus === 'CURRENT'
+            ? 'CURRENT'
+            : analysis.dataStatus;
 
         return {
           symbol: sym,
@@ -808,11 +813,11 @@ apiRouter.get('/market/scanner', authenticate, async (_req: Request, res: Respon
           volatility: analysis.volatility,
           bias: analysis.overallBias,
           dataQuality: analysis.dataQuality,
-          dataStatus: analysis.dataStatus,
-          lastUpdated: analysis.lastUpdated,
+          dataStatus: statusLabel,
+          lastUpdated: latestCandle ? new Date(latestCandle.timestamp).toISOString() : analysis.lastUpdated,
           scanStatus: 'ANALYSIS READY' as const,
           isDemo: false,
-          dataSourceLabel: 'REAL DATA (Twelve Data)',
+          dataSourceLabel: statusLabel === 'CURRENT' ? 'REAL DATA • CURRENT' : 'REAL DATA (Twelve Data)',
         };
       } catch (err: any) {
         console.warn(`[Market Scanner] Failed processing ${sym}:`, err.message);
@@ -826,22 +831,68 @@ apiRouter.get('/market/scanner', authenticate, async (_req: Request, res: Respon
   return res.json({
     pairs: results,
     mode: 'REAL',
-    dataSourceLabel: 'REAL DATA (Twelve Data)',
+    dataSourceLabel: 'REAL DATA • CURRENT',
   });
 });
 
 apiRouter.get('/market/pair', authenticate, async (req: Request, res: Response) => {
   try {
-    const { pair = 'EURUSD', timeframe = 'H1' } = req.query;
+    const user = (req as any).user;
+    const { pair = 'EURUSD', timeframe = 'H1', refresh } = req.query;
     const sym = normalizeSymbol(pair as string);
     const tf = parseTimeframe(timeframe as string);
+    const forceRefresh = refresh === 'true' || refresh === '1';
 
-    const syncResult = await MarketDataSyncService.syncHistoricalCandles(sym, tf, 100, false);
-    const analysis = await MarketDataSyncService.refreshSymbol(sym, false);
+    const syncResult = await MarketDataSyncService.syncHistoricalCandles(sym, tf, 250, forceRefresh);
+    const [analysis, symbolInfo] = await Promise.all([
+      MarketDataSyncService.refreshSymbol(sym, false, tf),
+      defaultMarketDataProvider.getSymbolInfo(sym),
+    ]);
+
     const latestPrice = MarketDataSyncService.getLatestPriceFromCandles(sym, syncResult.candles);
-    const symbolInfo = await defaultMarketDataProvider.getSymbolInfo(sym);
     const structure = analyzeMarketStructure(syncResult.candles as any, 3);
     const hasCandles = syncResult.candles && syncResult.candles.length > 0;
+    const latestCandle = hasCandles ? syncResult.candles[syncResult.candles.length - 1] : null;
+    const effectiveStatus = !hasCandles
+      ? 'NO_DATA'
+      : syncResult.freshness.isStale
+      ? 'STALE'
+      : 'CURRENT';
+
+    let defaultSignal = null;
+    if (hasCandles) {
+      const currentPrice = latestPrice.price || latestCandle!.close;
+      const isBearish = analysis.trend === 'BEARISH' || structure.trend === 'BEARISH';
+      const dir: 'LONG' | 'SHORT' = isBearish ? 'SHORT' : 'LONG';
+      const atr = syncResult.indicators?.atr14 ?? currentPrice * 0.003;
+      const sl = dir === 'LONG' ? currentPrice - atr * 1.5 : currentPrice + atr * 1.5;
+      const tp1 = dir === 'LONG' ? currentPrice + atr * 3.0 : currentPrice - atr * 3.0;
+      const tp2 = dir === 'LONG' ? currentPrice + atr * 4.5 : currentPrice - atr * 4.5;
+
+      defaultSignal = evaluateSignal({
+        userId: user?.id || 'system',
+        pair: sym,
+        timeframe: tf,
+        direction: dir,
+        candles: syncResult.candles as any,
+        indicator: syncResult.indicators,
+        structure,
+        entryPrice: currentPrice,
+        stopLoss: sl,
+        takeProfit1: tp1,
+        takeProfit2: tp2,
+        dataStatus: effectiveStatus,
+        dataQuality: syncResult.dataQuality,
+        marketAnalysis: analysis,
+      });
+    } else {
+      defaultSignal = {
+        status: 'BLOCKED',
+        score: 0,
+        explanation: 'Signal evaluation suppressed: NO REAL DATA AVAILABLE from Twelve Data.',
+        components: [],
+      };
+    }
 
     return res.json({
       symbol: sym,
@@ -858,12 +909,20 @@ apiRouter.get('/market/pair', authenticate, async (req: Request, res: Response) 
       support: analysis.nearestSupport,
       resistance: analysis.nearestResistance,
       multiTimeframe: analysis.multiTimeframe,
-      dataStatus: hasCandles ? syncResult.dataStatus.status : 'NO_DATA',
+      signal: defaultSignal,
+      dataStatus: effectiveStatus,
       dataQuality: hasCandles ? syncResult.dataQuality : 0,
-      lastUpdated: syncResult.dataStatus.lastSuccessfulSync || new Date().toISOString(),
+      freshness: syncResult.freshness,
+      latestCandleTimestamp: latestCandle ? new Date(latestCandle.timestamp).toISOString() : null,
+      isLatestCandleClosed: latestCandle ? latestCandle.isClosed !== false : true,
+      lastUpdated:
+        (latestCandle ? new Date(latestCandle.timestamp).toISOString() : null) ||
+        syncResult.dataStatus.lastSuccessfulSync ||
+        new Date().toISOString(),
+      lastSyncedAt: syncResult.dataStatus.lastSuccessfulSync || new Date().toISOString(),
       errorMessage: syncResult.dataStatus.errorMessage,
       isDemo: false,
-      dataSourceLabel: hasCandles ? 'REAL DATA (Twelve Data)' : 'NO REAL DATA',
+      dataSourceLabel: hasCandles ? 'REAL DATA • CURRENT' : 'NO REAL DATA',
     });
   } catch (err: any) {
     const status = err.statusCode || 500;
@@ -881,11 +940,19 @@ apiRouter.get('/market/:symbol', authenticate, async (req: Request, res: Respons
     const sym = normalizeSymbol(rawSymbol);
     const tf = parseTimeframe(timeframeQuery);
 
-    const syncResult = await MarketDataSyncService.syncHistoricalCandles(sym, tf, 100, false);
-    const analysis = await MarketDataSyncService.refreshSymbol(sym, false);
+    const syncResult = await MarketDataSyncService.syncHistoricalCandles(sym, tf, 250, false);
+    const [analysis, symbolInfo] = await Promise.all([
+      MarketDataSyncService.refreshSymbol(sym, false, tf),
+      defaultMarketDataProvider.getSymbolInfo(sym),
+    ]);
     const latestPrice = MarketDataSyncService.getLatestPriceFromCandles(sym, syncResult.candles);
-    const symbolInfo = await defaultMarketDataProvider.getSymbolInfo(sym);
     const hasCandles = syncResult.candles && syncResult.candles.length > 0;
+    const latestCandle = hasCandles ? syncResult.candles[syncResult.candles.length - 1] : null;
+    const effectiveStatus = !hasCandles
+      ? 'NO_DATA'
+      : syncResult.freshness.isStale
+      ? 'STALE'
+      : 'CURRENT';
 
     return res.json({
       symbol: sym,
@@ -893,9 +960,12 @@ apiRouter.get('/market/:symbol', authenticate, async (req: Request, res: Respons
       currentPrice: hasCandles ? latestPrice.price : 0,
       latestPrice,
       symbolInfo,
-      lastUpdated: analysis.lastUpdated,
-      dataStatus: hasCandles ? syncResult.dataStatus.status : 'NO_DATA',
+      lastUpdated:
+        (latestCandle ? new Date(latestCandle.timestamp).toISOString() : null) ||
+        analysis.lastUpdated,
+      dataStatus: effectiveStatus,
       dataQuality: hasCandles ? syncResult.dataQuality : 0,
+      freshness: syncResult.freshness,
       errorMessage: syncResult.dataStatus.errorMessage,
       latestCandles: syncResult.candles,
       candles: syncResult.candles,
@@ -906,7 +976,7 @@ apiRouter.get('/market/:symbol', authenticate, async (req: Request, res: Respons
       resistance: analysis.nearestResistance,
       multiTimeframe: analysis.multiTimeframe,
       isDemo: false,
-      dataSourceLabel: hasCandles ? 'REAL DATA (Twelve Data)' : 'NO REAL DATA',
+      dataSourceLabel: hasCandles ? 'REAL DATA • CURRENT' : 'NO REAL DATA',
     });
   } catch (err: any) {
     const status = err.statusCode || 500;
@@ -919,9 +989,85 @@ apiRouter.get('/market/:symbol', authenticate, async (req: Request, res: Respons
 
 apiRouter.post('/market/refresh/:symbol', authenticate, async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
     const sym = normalizeSymbol(req.params.symbol);
-    const analysis = await MarketDataSyncService.refreshSymbol(sym, true);
-    return res.json({ success: true, symbol: sym, analysis });
+    const tfInput = (req.body?.timeframe || req.query?.timeframe || 'H1') as string;
+    const tf = parseTimeframe(tfInput);
+
+    const syncResult = await MarketDataSyncService.syncHistoricalCandles(sym, tf, 250, true);
+    const [analysis, symbolInfo] = await Promise.all([
+      MarketDataSyncService.refreshSymbol(sym, false, tf),
+      defaultMarketDataProvider.getSymbolInfo(sym),
+    ]);
+    const latestPrice = MarketDataSyncService.getLatestPriceFromCandles(sym, syncResult.candles);
+    const structure = analyzeMarketStructure(syncResult.candles as any, 3);
+    const hasCandles = syncResult.candles && syncResult.candles.length > 0;
+    const latestCandle = hasCandles ? syncResult.candles[syncResult.candles.length - 1] : null;
+    const effectiveStatus = !hasCandles
+      ? 'NO_DATA'
+      : syncResult.freshness.isStale
+      ? 'STALE'
+      : 'CURRENT';
+
+    let defaultSignal = null;
+    if (hasCandles) {
+      const currentPrice = latestPrice.price || latestCandle!.close;
+      const isBearish = analysis.trend === 'BEARISH' || structure.trend === 'BEARISH';
+      const dir: 'LONG' | 'SHORT' = isBearish ? 'SHORT' : 'LONG';
+      const atr = syncResult.indicators?.atr14 ?? currentPrice * 0.003;
+      const sl = dir === 'LONG' ? currentPrice - atr * 1.5 : currentPrice + atr * 1.5;
+      const tp1 = dir === 'LONG' ? currentPrice + atr * 3.0 : currentPrice - atr * 3.0;
+      const tp2 = dir === 'LONG' ? currentPrice + atr * 4.5 : currentPrice - atr * 4.5;
+
+      defaultSignal = evaluateSignal({
+        userId: user?.id || 'system',
+        pair: sym,
+        timeframe: tf,
+        direction: dir,
+        candles: syncResult.candles as any,
+        indicator: syncResult.indicators,
+        structure,
+        entryPrice: currentPrice,
+        stopLoss: sl,
+        takeProfit1: tp1,
+        takeProfit2: tp2,
+        dataStatus: effectiveStatus,
+        dataQuality: syncResult.dataQuality,
+        marketAnalysis: analysis,
+      });
+    }
+
+    return res.json({
+      success: true,
+      symbol: sym,
+      pair: sym,
+      timeframe: tf,
+      analysis,
+      currentPrice: hasCandles ? latestPrice.price : 0,
+      latestPrice,
+      symbolInfo,
+      candles: syncResult.candles,
+      indicator: syncResult.indicators,
+      indicators: syncResult.indicators,
+      structure,
+      marketAnalysis: analysis,
+      support: analysis.nearestSupport,
+      resistance: analysis.nearestResistance,
+      multiTimeframe: analysis.multiTimeframe,
+      signal: defaultSignal,
+      dataStatus: effectiveStatus,
+      dataQuality: hasCandles ? syncResult.dataQuality : 0,
+      freshness: syncResult.freshness,
+      latestCandleTimestamp: latestCandle ? new Date(latestCandle.timestamp).toISOString() : null,
+      isLatestCandleClosed: latestCandle ? latestCandle.isClosed !== false : true,
+      lastUpdated:
+        (latestCandle ? new Date(latestCandle.timestamp).toISOString() : null) ||
+        syncResult.dataStatus.lastSuccessfulSync ||
+        new Date().toISOString(),
+      lastSyncedAt: syncResult.dataStatus.lastSuccessfulSync || new Date().toISOString(),
+      isDemo: false,
+      dataSourceLabel: hasCandles ? 'REAL DATA • CURRENT' : 'NO REAL DATA',
+    });
   } catch (err: any) {
     return res.status(err.statusCode || 500).json({
       error: err.message || 'Failed to refresh symbol',

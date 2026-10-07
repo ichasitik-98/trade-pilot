@@ -975,11 +975,11 @@ export class DatabaseStore {
 
     const candles = await prisma.marketCandle.findMany({
       where,
-      orderBy: { timestamp: 'asc' },
+      orderBy: { timestamp: 'desc' },
       take: params.limit || 500,
     });
 
-    return candles.map(mapMarketCandle);
+    return candles.reverse().map(mapMarketCandle);
   }
 
   public async getLatestCandle(symbol: string, timeframe: string): Promise<MarketCandle | undefined> {
@@ -1000,65 +1000,165 @@ export class DatabaseStore {
     return c ? mapMarketCandle(c) : undefined;
   }
 
-  public async upsertCandles(candles: Candle[]): Promise<{ upsertedCount: number }> {
+  public async upsertCandles(candles: Candle[]): Promise<{ upsertedCount: number; insertedCount?: number; updatedCount?: number }> {
     await this.init();
-    if (!candles || candles.length === 0) return { upsertedCount: 0 };
+    if (!candles || candles.length === 0) return { upsertedCount: 0, insertedCount: 0, updatedCount: 0 };
 
     // Cache existing instrument IDs for fast foreign key linking
     const instruments = await prisma.instrument.findMany({ select: { id: true, symbol: true } });
     const instrumentIdMap = new Map(instruments.map((i) => [i.symbol, i.id]));
 
-    let count = 0;
-    const CHUNK_SIZE = 5;
-    for (let i = 0; i < candles.length; i += CHUNK_SIZE) {
-      const chunk = candles.slice(i, i + CHUNK_SIZE);
-      await Promise.all(
-        chunk.map(async (c) => {
-          const sym = (c.symbol || c.pair || 'EURUSD').toUpperCase().replace(/[\/\_\-\.]/g, '');
-          const tf = (c.timeframe || 'H1').toUpperCase();
-          const ts = new Date(c.timestamp);
-          const instId = instrumentIdMap.get(sym) || null;
+    const normalized = candles.map((c) => {
+      const sym = (c.symbol || c.pair || 'EURUSD').toUpperCase().replace(/[\/\_\-\.]/g, '');
+      const tf = (c.timeframe || 'H1').toUpperCase();
+      const ts = new Date(c.timestamp);
+      const instId = instrumentIdMap.get(sym) || null;
+      return {
+        symbol: sym,
+        pair: sym,
+        timeframe: tf,
+        timestamp: ts,
+        timestampMs: ts.getTime(),
+        instrumentId: instId,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        source: c.source || 'TWELVEDATA',
+        isClosed: c.isClosed !== false,
+      };
+    });
 
-          await prisma.marketCandle.upsert({
+    const symbols = Array.from(new Set(normalized.map((c) => c.symbol)));
+    const timeframes = Array.from(new Set(normalized.map((c) => c.timeframe)));
+    const minTs = new Date(Math.min(...normalized.map((c) => c.timestampMs)));
+    const maxTs = new Date(Math.max(...normalized.map((c) => c.timestampMs)));
+
+    const existingRows = await prisma.marketCandle.findMany({
+      where: {
+        symbol: { in: symbols },
+        timeframe: { in: timeframes },
+        timestamp: { gte: minTs, lte: maxTs },
+      },
+      select: {
+        symbol: true,
+        timeframe: true,
+        timestamp: true,
+        open: true,
+        high: true,
+        low: true,
+        close: true,
+        volume: true,
+        source: true,
+        isClosed: true,
+      },
+    });
+
+    const existingMap = new Map<string, (typeof existingRows)[0]>();
+    for (const row of existingRows) {
+      existingMap.set(`${row.symbol}:${row.timeframe}:${row.timestamp.getTime()}`, row);
+    }
+
+    const toCreate: typeof normalized = [];
+    const toUpdate: typeof normalized = [];
+
+    // Always include the latest 2 candles in toUpdate if they exist so the forming/closing bar is guaranteed current
+    const tailThresholdIdx = Math.max(0, normalized.length - 2);
+
+    for (let idx = 0; idx < normalized.length; idx++) {
+      const c = normalized[idx];
+      const key = `${c.symbol}:${c.timeframe}:${c.timestampMs}`;
+      const existing = existingMap.get(key);
+
+      if (!existing) {
+        toCreate.push(c);
+      } else {
+        const isTail = idx >= tailThresholdIdx;
+        const hasDiff =
+          isTail ||
+          Math.abs(Number(existing.close) - c.close) > 1e-7 ||
+          Math.abs(Number(existing.high) - c.high) > 1e-7 ||
+          Math.abs(Number(existing.low) - c.low) > 1e-7 ||
+          Math.abs(Number(existing.open) - c.open) > 1e-7 ||
+          existing.isClosed !== c.isClosed ||
+          existing.source !== c.source;
+
+        if (hasDiff) {
+          toUpdate.push(c);
+        }
+      }
+    }
+
+    if (toCreate.length > 0) {
+      await prisma.marketCandle.createMany({
+        data: toCreate.map((c) => ({
+          id: crypto.randomUUID(),
+          instrumentId: c.instrumentId,
+          symbol: c.symbol,
+          pair: c.pair,
+          timeframe: c.timeframe,
+          timestamp: c.timestamp,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+          source: c.source,
+          isClosed: c.isClosed,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    const CHUNK_SIZE = 5;
+    for (let i = 0; i < toUpdate.length; i += CHUNK_SIZE) {
+      const chunk = toUpdate.slice(i, i + CHUNK_SIZE);
+      await Promise.all(
+        chunk.map((c) =>
+          prisma.marketCandle.upsert({
             where: {
               symbol_timeframe_timestamp: {
-                symbol: sym,
-                timeframe: tf,
-                timestamp: ts,
+                symbol: c.symbol,
+                timeframe: c.timeframe,
+                timestamp: c.timestamp,
               },
             },
             update: {
-              instrumentId: instId,
-              pair: sym,
+              instrumentId: c.instrumentId,
+              pair: c.pair,
               open: c.open,
               high: c.high,
               low: c.low,
               close: c.close,
               volume: c.volume,
-              source: c.source || 'TWELVEDATA',
-              isClosed: c.isClosed !== false,
+              source: c.source,
+              isClosed: c.isClosed,
             },
             create: {
-              instrumentId: instId,
-              symbol: sym,
-              pair: sym,
-              timeframe: tf,
-              timestamp: ts,
+              instrumentId: c.instrumentId,
+              symbol: c.symbol,
+              pair: c.pair,
+              timeframe: c.timeframe,
+              timestamp: c.timestamp,
               open: c.open,
               high: c.high,
               low: c.low,
               close: c.close,
               volume: c.volume,
-              source: c.source || 'TWELVEDATA',
-              isClosed: c.isClosed !== false,
+              source: c.source,
+              isClosed: c.isClosed,
             },
-          });
-          count++;
-        })
+          })
+        )
       );
     }
 
-    return { upsertedCount: count };
+    return {
+      upsertedCount: normalized.length,
+      insertedCount: toCreate.length,
+      updatedCount: toUpdate.length,
+    };
   }
 
   // ----------------------------------------------------
@@ -1076,11 +1176,11 @@ export class DatabaseStore {
 
     const indicators = await prisma.technicalIndicator.findMany({
       where: { symbol: sym, timeframe: tf },
-      orderBy: { timestamp: 'asc' },
+      orderBy: { timestamp: 'desc' },
       take: limit,
     });
 
-    return indicators.map(mapTechnicalIndicator);
+    return indicators.reverse().map(mapTechnicalIndicator);
   }
 
   public async upsertTechnicalIndicators(indicators: TechnicalIndicator[]): Promise<void> {
@@ -1292,8 +1392,8 @@ export class DatabaseStore {
       update: {
         lastCandleTimestamp: status.lastCandleTimestamp ? new Date(status.lastCandleTimestamp) : null,
         lastSuccessfulSync: status.lastSuccessfulSync ? new Date(status.lastSuccessfulSync) : new Date(),
-        provider: status.provider || 'DEMO',
-        status: status.status || 'LIVE',
+        provider: status.provider || 'Twelve Data',
+        status: status.status || 'FRESH',
         dataQualityScore: status.dataQualityScore ?? 100,
         errorMessage: status.errorMessage || null,
       },
@@ -1303,8 +1403,8 @@ export class DatabaseStore {
         timeframe: tf,
         lastCandleTimestamp: status.lastCandleTimestamp ? new Date(status.lastCandleTimestamp) : null,
         lastSuccessfulSync: status.lastSuccessfulSync ? new Date(status.lastSuccessfulSync) : new Date(),
-        provider: status.provider || 'DEMO',
-        status: status.status || 'LIVE',
+        provider: status.provider || 'Twelve Data',
+        status: status.status || 'FRESH',
         dataQualityScore: status.dataQualityScore ?? 100,
         errorMessage: status.errorMessage || null,
       },

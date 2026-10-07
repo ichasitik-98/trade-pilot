@@ -169,13 +169,13 @@ export const api = {
       dataSourceLabel: string;
     }>(`/market/${symbol}?timeframe=${timeframe}`),
 
-  getPairAnalysis: (pair: string, timeframe: string = 'H1') =>
+  getPairAnalysis: (pair: string, timeframe: string = 'H1', refresh: boolean = false, signal?: AbortSignal) =>
     request<{
       symbol: string;
       pair: string;
       timeframe: string;
       currentPrice: number;
-      latestPrice: { price: number; change24h: number; high24h: number; low24h: number };
+      latestPrice: { price: number; change24h: number; high24h: number; low24h: number; timestamp?: number };
       symbolInfo: { symbol: string; baseAsset: string; quoteAsset: string; pipSize: number; category: string };
       candles: any[];
       indicator: any;
@@ -185,16 +185,58 @@ export const api = {
       support: any;
       resistance: any;
       multiTimeframe: any;
+      signal?: any;
       dataStatus: string;
       dataQuality: number;
+      freshness?: {
+        status: string;
+        isStale: boolean;
+        isCurrent: boolean;
+        freshnessMs: number;
+        ageSeconds: number;
+        thresholdMs: number;
+        lastCandleTimestamp?: string | null;
+      };
+      latestCandleTimestamp?: string | null;
+      isLatestCandleClosed?: boolean;
       lastUpdated: string;
+      lastSyncedAt?: string;
+      errorMessage?: string;
       isDemo: boolean;
       dataSourceLabel: string;
-    }>(`/market/pair?pair=${pair}&timeframe=${timeframe}`),
+    }>(`/market/pair?pair=${pair}&timeframe=${timeframe}${refresh ? '&refresh=true' : ''}`, { signal }),
 
-  refreshMarketSymbol: (symbol: string) =>
-    request<{ success: boolean; symbol: string; analysis: any }>(`/market/refresh/${symbol}`, {
+  refreshMarketSymbol: (symbol: string, timeframe: string = 'H1') =>
+    request<{
+      success: boolean;
+      symbol: string;
+      pair?: string;
+      timeframe?: string;
+      analysis: any;
+      currentPrice?: number;
+      latestPrice?: any;
+      symbolInfo?: any;
+      candles?: any[];
+      indicator?: any;
+      indicators?: any;
+      structure?: any;
+      marketAnalysis?: any;
+      support?: any;
+      resistance?: any;
+      multiTimeframe?: any;
+      signal?: any;
+      dataStatus?: string;
+      dataQuality?: number;
+      freshness?: any;
+      latestCandleTimestamp?: string | null;
+      isLatestCandleClosed?: boolean;
+      lastUpdated?: string;
+      lastSyncedAt?: string;
+      isDemo?: boolean;
+      dataSourceLabel?: string;
+    }>(`/market/refresh/${symbol}?timeframe=${timeframe}`, {
       method: 'POST',
+      body: JSON.stringify({ timeframe }),
     }),
 
   evaluateSignal: (data: {

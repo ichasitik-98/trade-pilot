@@ -104,7 +104,19 @@ export interface TradeStatistics {
   sharpeRatio: number;
 }
 
-export type MarketDataStatusCode = 'LIVE' | 'FRESH' | 'DELAYED' | 'STALE' | 'DEMO' | 'ERROR' | 'NO_DATA' | 'UNAVAILABLE';
+export type MarketDataStatusCode =
+  | 'LIVE'
+  | 'FRESH'
+  | 'CURRENT'
+  | 'UP_TO_DATE'
+  | 'REFRESHING'
+  | 'MARKET_CLOSED'
+  | 'DELAYED'
+  | 'STALE'
+  | 'DEMO'
+  | 'ERROR'
+  | 'NO_DATA'
+  | 'UNAVAILABLE';
 
 export interface SupportResistanceLevel {
   price: number;

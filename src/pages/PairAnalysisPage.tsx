@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../services/api.ts';
 import { ChartEngine } from '../components/charts/index.ts';
 import {
@@ -36,6 +36,9 @@ const POPULAR_PAIRS = [
   'BTCUSD',
 ];
 
+// Client-side memory cache for instant pair/timeframe switching
+const pairAnalysisCache = new Map<string, { data: any; signal: any; cachedAt: number }>();
+
 function formatJakartaTime(timestamp: number | string | Date | undefined): string {
   if (!timestamp) return 'N/A';
   try {
@@ -51,7 +54,7 @@ function formatJakartaTime(timestamp: number | string | Date | undefined): strin
         minute: '2-digit',
         second: '2-digit',
         hour12: false,
-      }) + ' (Asia/Jakarta)'
+      }) + ' WIB'
     );
   } catch {
     return 'N/A';
@@ -61,10 +64,21 @@ function formatJakartaTime(timestamp: number | string | Date | undefined): strin
 export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithPair }: PairAnalysisPageProps) {
   const [selectedPair, setSelectedPair] = useState(initialPair);
   const [timeframe, setTimeframe] = useState('H1');
-  const [data, setData] = useState<any | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [signal, setSignal] = useState<any | null>(null);
+  const [data, setData] = useState<any | null>(() => {
+    return pairAnalysisCache.get(`${initialPair}:H1`)?.data ?? null;
+  });
+  const [loading, setLoading] = useState(() => !pairAnalysisCache.has(`${initialPair}:H1`));
+  const [signal, setSignal] = useState<any | null>(() => {
+    return pairAnalysisCache.get(`${initialPair}:H1`)?.signal ?? null;
+  });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (initialPair && initialPair !== selectedPair) {
+      setSelectedPair(initialPair);
+    }
+  }, [initialPair]);
 
   const hasRealData = Boolean(
     data?.candles &&
@@ -73,53 +87,118 @@ export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithP
       data.dataStatus !== 'UNAVAILABLE'
   );
 
-  const fetchPairData = async () => {
-    try {
-      setLoading(true);
-      const res = await api.getPairAnalysis(selectedPair, timeframe);
-      setData(res);
+  const applyPairResponse = useCallback((pairKey: string, res: any) => {
+    setData(res);
+    const resolvedSignal =
+      res.signal ||
+      (res.candles?.length
+        ? null
+        : {
+            status: 'BLOCKED',
+            score: 0,
+            explanation: 'Signal evaluation suppressed: NO REAL DATA AVAILABLE from Twelve Data.',
+            components: [],
+          });
+    if (resolvedSignal) {
+      setSignal(resolvedSignal);
+    }
+    pairAnalysisCache.set(pairKey, {
+      data: res,
+      signal: resolvedSignal,
+      cachedAt: Date.now(),
+    });
+  }, []);
 
-      const realCandlesCount = res.candles?.length || 0;
-      if (realCandlesCount === 0) {
-        setSignal({
-          status: 'BLOCKED',
-          score: 0,
-          explanation: 'Signal evaluation suppressed: NO REAL DATA AVAILABLE from Twelve Data.',
-          components: [],
-        });
-        return;
+  const fetchPairData = useCallback(
+    async (options?: { forceRefresh?: boolean; background?: boolean }) => {
+      const pairKey = `${selectedPair}:${timeframe}`;
+      const cached = pairAnalysisCache.get(pairKey);
+
+      if (cached && !options?.forceRefresh && !options?.background) {
+        setData(cached.data);
+        if (cached.signal) setSignal(cached.signal);
+        setLoading(false);
+        // If cache is < 25s old and CURRENT, skip network round-trip
+        if (
+          Date.now() - cached.cachedAt < 25_000 &&
+          (cached.data?.dataStatus === 'CURRENT' || cached.data?.dataStatus === 'FRESH')
+        ) {
+          return;
+        }
       }
 
-      // Evaluate setup using validated real market data
-      const currentPrice = res.latestPrice?.price ?? res.candles[res.candles.length - 1]?.close ?? 0;
-      const isBearish = res.marketAnalysis?.trend === 'BEARISH' || res.structure?.trend === 'BEARISH';
-      const dir: 'LONG' | 'SHORT' = isBearish ? 'SHORT' : 'LONG';
-      const atr = res.indicator?.atr14 ?? currentPrice * 0.003;
-      const sl = dir === 'LONG' ? currentPrice - atr * 1.5 : currentPrice + atr * 1.5;
-      const tp = dir === 'LONG' ? currentPrice + atr * 3.0 : currentPrice - atr * 3.0;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
-      const sigRes = await api.evaluateSignal({
-        pair: selectedPair,
-        timeframe,
-        direction: dir,
-        entryPrice: currentPrice,
-        stopLoss: sl,
-        takeProfit1: tp,
-      });
+      try {
+        if (!cached && !data) {
+          setLoading(true);
+        } else {
+          setIsRefreshing(true);
+        }
 
-      setSignal(sigRes.signal);
-    } catch (err) {
-      console.error('Failed fetching pair analysis:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+        const res = await api.getPairAnalysis(
+          selectedPair,
+          timeframe,
+          Boolean(options?.forceRefresh),
+          controller.signal
+        );
+
+        if (controller.signal.aborted) return;
+        applyPairResponse(pairKey, res);
+
+        // Fallback signal request only if server did not embed pre-evaluated signal
+        if (!res.signal && res.candles?.length > 0) {
+          const currentPrice = res.latestPrice?.price ?? res.candles[res.candles.length - 1]?.close ?? 0;
+          const isBearish = res.marketAnalysis?.trend === 'BEARISH' || res.structure?.trend === 'BEARISH';
+          const dir: 'LONG' | 'SHORT' = isBearish ? 'SHORT' : 'LONG';
+          const atr = res.indicator?.atr14 ?? currentPrice * 0.003;
+          const sl = dir === 'LONG' ? currentPrice - atr * 1.5 : currentPrice + atr * 1.5;
+          const tp = dir === 'LONG' ? currentPrice + atr * 3.0 : currentPrice - atr * 3.0;
+
+          const sigRes = await api.evaluateSignal({
+            pair: selectedPair,
+            timeframe,
+            direction: dir,
+            entryPrice: currentPrice,
+            stopLoss: sl,
+            takeProfit1: tp,
+          });
+          if (!controller.signal.aborted) {
+            setSignal(sigRes.signal);
+            pairAnalysisCache.set(pairKey, {
+              data: res,
+              signal: sigRes.signal,
+              cachedAt: Date.now(),
+            });
+          }
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        console.error('Failed fetching pair analysis:', err);
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
+      }
+    },
+    [selectedPair, timeframe, applyPairResponse, data]
+  );
 
   const handleManualRefresh = async () => {
+    const pairKey = `${selectedPair}:${timeframe}`;
     try {
       setIsRefreshing(true);
-      await api.refreshMarketSymbol(selectedPair);
-      await fetchPairData();
+      const refreshed = await api.refreshMarketSymbol(selectedPair, timeframe);
+      if (refreshed && refreshed.candles) {
+        applyPairResponse(pairKey, refreshed);
+      } else {
+        await fetchPairData({ forceRefresh: true });
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -129,7 +208,20 @@ export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithP
 
   useEffect(() => {
     fetchPairData();
+    return () => {
+      abortControllerRef.current?.abort();
+    };
   }, [selectedPair, timeframe]);
+
+  // Auto-refresh active chart every 60 seconds while tab is visible
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchPairData({ background: true });
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchPairData]);
 
   const getStatusBadge = (status: MarketDataStatusCode, hasCandles: boolean) => {
     if (!hasCandles || status === 'NO_DATA' || status === 'UNAVAILABLE') {
@@ -142,12 +234,21 @@ export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithP
     }
 
     switch (status) {
+      case 'CURRENT':
       case 'LIVE':
       case 'FRESH':
+      case 'UP_TO_DATE':
         return (
           <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            REAL DATA &bull; TWELVE DATA
+            REAL DATA &bull; CURRENT
+          </span>
+        );
+      case 'MARKET_CLOSED':
+        return (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+            REAL DATA &bull; MARKET CLOSED
           </span>
         );
       case 'DELAYED':
@@ -174,7 +275,7 @@ export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithP
         return (
           <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            REAL DATA
+            REAL DATA &bull; CURRENT
           </span>
         );
     }
@@ -295,15 +396,35 @@ export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithP
 
           {/* Section 23: Explicit Real Market Data Source Labeling */}
           <div className="p-3.5 rounded-xl bg-zinc-900/90 border border-zinc-800/80 flex flex-wrap items-center justify-between gap-3 text-xs font-mono shadow-md">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className={`w-2 h-2 rounded-full ${hasRealData ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-              <span className="font-bold text-zinc-100">{hasRealData ? 'REAL DATA' : 'NO REAL DATA'}</span>
+              <span className="font-bold text-zinc-100">
+                {hasRealData
+                  ? data?.dataStatus === 'STALE'
+                    ? 'REAL DATA • STALE'
+                    : 'REAL DATA • CURRENT'
+                  : 'NO REAL DATA'}
+              </span>
               <span className="text-zinc-600">|</span>
               <span className="text-zinc-400">Source: Twelve Data</span>
+              {hasRealData && (
+                <>
+                  <span className="text-zinc-600">|</span>
+                  <span className={data?.isLatestCandleClosed === false ? 'text-emerald-400 font-semibold' : 'text-zinc-400'}>
+                    {data?.isLatestCandleClosed === false ? 'Live Forming Bar' : 'Completed Bar'} ({data?.candles?.length || 0} bars)
+                  </span>
+                </>
+              )}
+              {isRefreshing && (
+                <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px]">
+                  <RotateCcw className="w-2.5 h-2.5 animate-spin" />
+                  REFRESHING
+                </span>
+              )}
             </div>
             <div className="text-[11px] text-zinc-400">
               {hasRealData
-                ? `Last update: ${formatJakartaTime(data?.lastUpdated || data?.latestPrice?.timestamp)}`
+                ? `Latest bar: ${formatJakartaTime(data?.latestCandleTimestamp || data?.lastUpdated || data?.latestPrice?.timestamp)}`
                 : `Reason: ${data?.errorMessage || 'Twelve Data entitlement/access unavailable or not synced'}`}
             </div>
           </div>

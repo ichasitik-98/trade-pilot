@@ -15,6 +15,8 @@ interface ChartRendererProps {
   resistanceLevel?: number | null;
   showCrosshair: boolean;
   symbol: string;
+  timeframe?: string;
+  isRefreshing?: boolean;
 }
 
 export const ChartRenderer: React.FC<ChartRendererProps> = ({
@@ -25,6 +27,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   resistanceLevel,
   showCrosshair,
   symbol,
+  timeframe = 'H1',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 400 });
@@ -216,6 +219,59 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     return p.toFixed(isJpyOrGold ? 2 : 4);
   };
 
+  const formatAxisTime = (ts: number) => {
+    const d = new Date(ts);
+    if (timeframe === 'D1' || timeframe === 'W1') {
+      return d.toLocaleDateString('en-GB', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short' });
+    }
+    if (timeframe === 'H4' || timeframe === 'H1') {
+      return d.toLocaleString('en-GB', {
+        timeZone: 'Asia/Jakarta',
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+    }
+    return d.toLocaleTimeString('en-GB', {
+      timeZone: 'Asia/Jakarta',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  };
+
+  const formatHudTime = (ts: number) => {
+    const d = new Date(ts);
+    return (
+      d.toLocaleString('en-GB', {
+        timeZone: 'Asia/Jakarta',
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }) + ' WIB'
+    );
+  };
+
+  // Memoize SVG paths so mouse-move crosshair tracking never recomputes path geometry
+  const memoizedPaths = useMemo(() => {
+    return {
+      closeLine: (chartType === 'LINE' || chartType === 'AREA') ? buildLinePath((c) => c.close) : '',
+      bbUpper: visibleIndicators.bollingerBands ? buildLinePath((c) => c.bbUpper) : '',
+      bbMiddle: visibleIndicators.bollingerBands ? buildLinePath((c) => c.bbMiddle) : '',
+      bbLower: visibleIndicators.bollingerBands ? buildLinePath((c) => c.bbLower) : '',
+      ema20: visibleIndicators.ema20 ? buildLinePath((c) => c.ema20) : '',
+      ema50: visibleIndicators.ema50 ? buildLinePath((c) => c.ema50) : '',
+      ema200: visibleIndicators.ema200 ? buildLinePath((c) => c.ema200) : '',
+      sma20: visibleIndicators.sma20 ? buildLinePath((c) => c.sma20) : '',
+      sma50: visibleIndicators.sma50 ? buildLinePath((c) => c.sma50) : '',
+      sma200: visibleIndicators.sma200 ? buildLinePath((c) => c.sma200) : '',
+    };
+  }, [candles, chartType, visibleIndicators, minPrice, maxPrice, dimensions.width, dimensions.height]);
+
   // Generate 6 horizontal price grid lines
   const priceGridTicks = useMemo(() => {
     const ticks: number[] = [];
@@ -237,10 +293,11 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     return ticks;
   }, [candles]);
 
+  const latestCandle = candles.length > 0 ? candles[candles.length - 1] : null;
   const activeCandle =
     hoveredIndex !== null && hoveredIndex >= 0 && hoveredIndex < candles.length
       ? candles[hoveredIndex]
-      : candles[candles.length - 1];
+      : latestCandle;
 
   if (candles.length === 0) {
     return (
@@ -267,7 +324,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
           <div className="flex items-center gap-2">
             <span className="font-extrabold text-zinc-200">{symbol}</span>
             <span className="text-zinc-500">
-              {new Date(activeCandle.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {formatHudTime(activeCandle.timestamp)}
             </span>
           </div>
 
@@ -382,7 +439,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
                 fontFamily="monospace"
                 textAnchor="middle"
               >
-                {new Date(tick.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {formatAxisTime(tick.timestamp)}
               </text>
             </g>
           );
@@ -395,7 +452,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         {visibleIndicators.bollingerBands && (
           <>
             <path
-              d={buildLinePath((c) => c.bbUpper)}
+              d={memoizedPaths.bbUpper}
               fill="none"
               stroke="#38bdf8"
               strokeWidth={1}
@@ -403,7 +460,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
               opacity={0.7}
             />
             <path
-              d={buildLinePath((c) => c.bbMiddle)}
+              d={memoizedPaths.bbMiddle}
               fill="none"
               stroke="#94a3b8"
               strokeWidth={1}
@@ -411,7 +468,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
               opacity={0.5}
             />
             <path
-              d={buildLinePath((c) => c.bbLower)}
+              d={memoizedPaths.bbLower}
               fill="none"
               stroke="#38bdf8"
               strokeWidth={1}
@@ -490,9 +547,9 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         {/* AREA CHART Rendering */}
         {chartType === 'AREA' && (
           <>
-            {areaChartPath && <path d={areaChartPath} />}
+            {areaChartPath && <path d={areaChartPath} fill="url(#areaGradient)" />}
             <path
-              d={buildLinePath((c) => c.close)}
+              d={memoizedPaths.closeLine}
               fill="none"
               stroke="#10b981"
               strokeWidth={2}
@@ -503,7 +560,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         {/* LINE CHART Rendering */}
         {chartType === 'LINE' && (
           <path
-            d={buildLinePath((c) => c.close)}
+            d={memoizedPaths.closeLine}
             fill="none"
             stroke="#10b981"
             strokeWidth={2}
@@ -566,55 +623,89 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
           })}
 
         {/* Overlay Lines: EMA20, EMA50, EMA200, SMA20, SMA50, SMA200 */}
-        {visibleIndicators.ema20 && (
+        {visibleIndicators.ema20 && memoizedPaths.ema20 && (
           <path
-            d={buildLinePath((c) => c.ema20)}
+            d={memoizedPaths.ema20}
             fill="none"
             stroke="#06b6d4"
             strokeWidth={1.5}
             strokeDasharray="3 2"
           />
         )}
-        {visibleIndicators.ema50 && (
+        {visibleIndicators.ema50 && memoizedPaths.ema50 && (
           <path
-            d={buildLinePath((c) => c.ema50)}
+            d={memoizedPaths.ema50}
             fill="none"
             stroke="#f59e0b"
             strokeWidth={1.5}
             strokeDasharray="3 2"
           />
         )}
-        {visibleIndicators.ema200 && (
+        {visibleIndicators.ema200 && memoizedPaths.ema200 && (
           <path
-            d={buildLinePath((c) => c.ema200)}
+            d={memoizedPaths.ema200}
             fill="none"
             stroke="#a855f7"
             strokeWidth={2}
           />
         )}
-        {visibleIndicators.sma20 && (
+        {visibleIndicators.sma20 && memoizedPaths.sma20 && (
           <path
-            d={buildLinePath((c) => c.sma20)}
+            d={memoizedPaths.sma20}
             fill="none"
             stroke="#3b82f6"
             strokeWidth={1.5}
           />
         )}
-        {visibleIndicators.sma50 && (
+        {visibleIndicators.sma50 && memoizedPaths.sma50 && (
           <path
-            d={buildLinePath((c) => c.sma50)}
+            d={memoizedPaths.sma50}
             fill="none"
             stroke="#6366f1"
             strokeWidth={1.5}
           />
         )}
-        {visibleIndicators.sma200 && (
+        {visibleIndicators.sma200 && memoizedPaths.sma200 && (
           <path
-            d={buildLinePath((c) => c.sma200)}
+            d={memoizedPaths.sma200}
             fill="none"
             stroke="#8b5cf6"
             strokeWidth={2}
           />
+        )}
+
+        {/* Live Price Horizontal Line & Right-Axis Badge */}
+        {latestCandle && (
+          <g className="pointer-events-none">
+            <line
+              x1={padding.left}
+              y1={getY(latestCandle.close)}
+              x2={dimensions.width - padding.right}
+              y2={getY(latestCandle.close)}
+              stroke={latestCandle.isBullish ? '#10b981' : '#f43f5e'}
+              strokeWidth={1}
+              strokeDasharray="2 2"
+              opacity={0.75}
+            />
+            <rect
+              x={dimensions.width - padding.right + 2}
+              y={getY(latestCandle.close) - 8}
+              width={60}
+              height={16}
+              rx={3}
+              fill={latestCandle.isBullish ? '#059669' : '#e11d48'}
+            />
+            <text
+              x={dimensions.width - padding.right + 5}
+              y={getY(latestCandle.close) + 3}
+              fill="#ffffff"
+              fontSize={9}
+              fontFamily="monospace"
+              fontWeight="bold"
+            >
+              ${formatPrice(chartType === 'HEIKIN_ASHI' ? latestCandle.rawClose : latestCandle.close)}
+            </text>
+          </g>
         )}
 
         {/* Interactive Crosshair (Cursor Tracker) */}
