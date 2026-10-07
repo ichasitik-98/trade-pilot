@@ -16,7 +16,7 @@ import { TradingAccount, TradeStatistics, Trade } from '../types.ts';
 
 interface DashboardPageProps {
   activeAccount: TradingAccount | null;
-  onOpenTradeModal: () => void;
+  onOpenTradeModal: (tradeToEdit?: Trade) => void;
   onNavigateTab: (tab: string) => void;
 }
 
@@ -223,7 +223,7 @@ export function DashboardPage({ activeAccount, onOpenTradeModal, onNavigateTab }
               Start documenting your executions to unlock equity curve telemetry, win rates, and AI coaching.
             </p>
             <button
-              onClick={onOpenTradeModal}
+              onClick={() => onOpenTradeModal()}
               className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold rounded-lg transition"
             >
               Log First Trade
@@ -247,7 +247,12 @@ export function DashboardPage({ activeAccount, onOpenTradeModal, onNavigateTab }
               </thead>
               <tbody className="divide-y divide-zinc-800/50">
                 {recentTrades.map((t) => (
-                  <tr key={t.id} className="hover:bg-zinc-800/30 transition">
+                  <tr
+                    key={t.id}
+                    onClick={() => onOpenTradeModal(t)}
+                    title="Click to edit trade in journal"
+                    className="hover:bg-zinc-800/30 transition cursor-pointer"
+                  >
                     <td className="p-3 text-zinc-400">
                       {new Date(t.entryTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                     </td>

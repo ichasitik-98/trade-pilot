@@ -474,18 +474,52 @@ apiRouter.post('/trades', authenticate, async (req: Request, res: Response) => {
 
 apiRouter.put('/trades/:id', authenticate, async (req: Request, res: Response) => {
   const user = (req as any).user;
-  const existing = await db.getTradeById(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Trade not found' });
+  const tradeId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+
+  console.info('Trade update request:', {
+    tradeIdPresent: Boolean(tradeId),
+    userAuthenticated: Boolean(user?.id),
+  });
+
+  if (!tradeId) {
+    return res.status(400).json({ error: 'Cannot update trade: tradeId is missing' });
+  }
+
+  const existing = await db.getTradeById(tradeId);
+  if (!existing || existing.id !== tradeId) {
+    return res.status(404).json({ error: 'Trade not found' });
+  }
   assertOwnership(existing.userId, user.id, user.role);
 
-  const updated = await db.updateTrade(req.params.id, req.body);
+  const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
+  const effectiveDirection =
+    rawBody.direction === 'LONG' || rawBody.direction === 'SHORT'
+      ? rawBody.direction
+      : existing.direction;
+  const effectiveEntryPrice =
+    typeof rawBody.entryPrice === 'number' && Number.isFinite(rawBody.entryPrice) && rawBody.entryPrice > 0
+      ? rawBody.entryPrice
+      : existing.entryPrice;
+  const effectiveStopLoss =
+    typeof rawBody.stopLoss === 'number' && Number.isFinite(rawBody.stopLoss) && rawBody.stopLoss > 0
+      ? rawBody.stopLoss
+      : existing.stopLoss;
+
+  if (effectiveDirection === 'LONG' && effectiveStopLoss >= effectiveEntryPrice) {
+    return res.status(400).json({ error: 'LONG trade stop-loss must be lower than entry price' });
+  }
+  if (effectiveDirection === 'SHORT' && effectiveStopLoss <= effectiveEntryPrice) {
+    return res.status(400).json({ error: 'SHORT trade stop-loss must be higher than entry price' });
+  }
+
+  const updated = await db.updateTrade(tradeId, rawBody);
 
   await db.addAuditLog({
     userId: user.id,
     action: 'TRADE_UPDATED',
     entity: 'TRADE',
-    entityId: req.params.id,
-    details: `Updated trade details for ${existing.pair}`,
+    entityId: tradeId,
+    details: `Updated trade details for ${updated?.pair || existing.pair}`,
     ipAddress: req.ip,
   });
 

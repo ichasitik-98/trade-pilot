@@ -584,9 +584,25 @@ export class DatabaseStore {
   }
 
   public async updateTrade(id: string, updates: Partial<Trade>): Promise<Trade | undefined> {
+    const cleanId = typeof id === 'string' ? id.trim() : '';
+    if (!cleanId) {
+      throw new Error('Cannot update trade: tradeId is missing');
+    }
     await this.init();
     const data: any = {};
-    if (updates.status !== undefined) {
+
+    if (typeof updates.pair === 'string' && updates.pair.trim().length >= 2) {
+      data.pair = updates.pair.trim().toUpperCase();
+    }
+    if (updates.direction === 'LONG' || updates.direction === 'SHORT') {
+      data.direction =
+        updates.direction === 'SHORT' ? PrismaTradeDirection.SHORT : PrismaTradeDirection.LONG;
+    }
+    if (
+      updates.status === 'OPEN' ||
+      updates.status === 'CLOSED' ||
+      updates.status === 'CANCELLED'
+    ) {
       data.status =
         updates.status === 'CLOSED'
           ? PrismaTradeStatus.CLOSED
@@ -594,21 +610,108 @@ export class DatabaseStore {
           ? PrismaTradeStatus.CANCELLED
           : PrismaTradeStatus.OPEN;
     }
-    if (updates.exitPrice !== undefined) data.exitPrice = updates.exitPrice;
-    if (updates.exitTime !== undefined) data.exitTime = updates.exitTime ? new Date(updates.exitTime) : null;
-    if (updates.grossPnL !== undefined) data.grossPnL = updates.grossPnL;
-    if (updates.netPnL !== undefined) data.netPnL = updates.netPnL;
-    if (updates.fees !== undefined) data.fees = updates.fees;
-    if (updates.pnlPercent !== undefined) data.pnlPercent = updates.pnlPercent;
-    if (updates.rMultiple !== undefined) data.rMultiple = updates.rMultiple;
-    if (updates.exitReason !== undefined) data.exitReason = updates.exitReason;
-    if (updates.notes !== undefined) data.notes = updates.notes;
-    if (updates.psychology !== undefined) data.psychology = updates.psychology;
-    if (updates.mistakeTags !== undefined) data.mistakeTags = updates.mistakeTags;
-    if (updates.setupId !== undefined) data.setupId = updates.setupId;
+    if (typeof updates.timeframe === 'string' && updates.timeframe.trim().length > 0) {
+      data.timeframe = updates.timeframe.trim();
+    }
+    if (typeof updates.tradingSession === 'string' && updates.tradingSession.trim().length > 0) {
+      data.tradingSession = updates.tradingSession.trim();
+    }
+    if (
+      typeof updates.entryPrice === 'number' &&
+      Number.isFinite(updates.entryPrice) &&
+      updates.entryPrice > 0
+    ) {
+      data.entryPrice = updates.entryPrice;
+    }
+    if (
+      typeof updates.exitPrice === 'number' &&
+      Number.isFinite(updates.exitPrice) &&
+      updates.exitPrice > 0
+    ) {
+      data.exitPrice = updates.exitPrice;
+    }
+    if (
+      typeof updates.stopLoss === 'number' &&
+      Number.isFinite(updates.stopLoss) &&
+      updates.stopLoss > 0
+    ) {
+      data.stopLoss = updates.stopLoss;
+    }
+    if (
+      typeof updates.takeProfit === 'number' &&
+      Number.isFinite(updates.takeProfit) &&
+      updates.takeProfit > 0
+    ) {
+      data.takeProfit = updates.takeProfit;
+    }
+    if (
+      typeof updates.lotSize === 'number' &&
+      Number.isFinite(updates.lotSize) &&
+      updates.lotSize > 0
+    ) {
+      data.lotSize = updates.lotSize;
+    }
+    if (
+      typeof updates.riskPercent === 'number' &&
+      Number.isFinite(updates.riskPercent) &&
+      updates.riskPercent > 0
+    ) {
+      data.riskPercent = updates.riskPercent;
+    }
+    if (
+      typeof updates.riskAmount === 'number' &&
+      Number.isFinite(updates.riskAmount) &&
+      updates.riskAmount >= 0
+    ) {
+      data.riskAmount = updates.riskAmount;
+    }
+    if (typeof updates.entryTime === 'string' && updates.entryTime.trim().length > 0) {
+      const parsedEntry = new Date(updates.entryTime);
+      if (!isNaN(parsedEntry.getTime())) data.entryTime = parsedEntry;
+    }
+    if (typeof updates.exitTime === 'string' && updates.exitTime.trim().length > 0) {
+      const parsedExit = new Date(updates.exitTime);
+      if (!isNaN(parsedExit.getTime())) data.exitTime = parsedExit;
+    }
+    if (typeof updates.grossPnL === 'number' && Number.isFinite(updates.grossPnL)) {
+      data.grossPnL = updates.grossPnL;
+    }
+    if (typeof updates.netPnL === 'number' && Number.isFinite(updates.netPnL)) {
+      data.netPnL = updates.netPnL;
+    }
+    if (typeof updates.fees === 'number' && Number.isFinite(updates.fees) && updates.fees >= 0) {
+      data.fees = updates.fees;
+    }
+    if (typeof updates.pnlPercent === 'number' && Number.isFinite(updates.pnlPercent)) {
+      data.pnlPercent = updates.pnlPercent;
+    }
+    if (typeof updates.rMultiple === 'number' && Number.isFinite(updates.rMultiple)) {
+      data.rMultiple = updates.rMultiple;
+    }
+    if (typeof updates.setup === 'string' && updates.setup.trim().length > 0) {
+      data.setup = updates.setup.trim();
+    }
+    if (typeof updates.entryReason === 'string') {
+      data.entryReason = updates.entryReason;
+    }
+    if (typeof updates.exitReason === 'string') {
+      data.exitReason = updates.exitReason;
+    }
+    if (typeof updates.notes === 'string') {
+      data.notes = updates.notes;
+    }
+    if (Array.isArray(updates.psychology)) {
+      data.psychology = updates.psychology;
+    }
+    if (Array.isArray(updates.mistakeTags)) {
+      data.mistakeTags = updates.mistakeTags;
+    }
+    if (typeof updates.setupId === 'string' && updates.setupId.trim().length > 0) {
+      data.setupId = updates.setupId.trim();
+    }
 
     const updated = await prisma.trade.update({
-      where: { id },
+      where: { id: cleanId },
       data,
     });
     return mapTrade(updated);

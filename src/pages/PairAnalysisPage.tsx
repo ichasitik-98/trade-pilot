@@ -19,7 +19,14 @@ import { MarketDataStatusCode } from '../types.ts';
 
 interface PairAnalysisPageProps {
   initialPair?: string;
-  onOpenTradeModalWithPair?: (pair: string, direction: 'LONG' | 'SHORT', entry: number, sl: number, tp: number) => void;
+  onOpenTradeModalWithPair?: (
+    pair: string,
+    direction: 'LONG' | 'SHORT',
+    entry: number,
+    sl: number,
+    tp: number,
+    timeframe?: string
+  ) => void;
 }
 
 const POPULAR_PAIRS = [
@@ -627,7 +634,8 @@ export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithP
                           signal.direction,
                           signal.entryPrice,
                           signal.stopLoss,
-                          signal.takeProfit1
+                          signal.takeProfit1,
+                          timeframe
                         )
                       }
                       className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs rounded-xl transition cursor-pointer"

@@ -3,14 +3,17 @@ import { User, TradingAccount, RiskSetting, Trade, TradeStatistics, ScannerItem,
 const TOKEN_KEY = 'tradepilot_session_token';
 
 export function getStoredToken(): string | null {
+  if (typeof localStorage === 'undefined') return null;
   return localStorage.getItem(TOKEN_KEY);
 }
 
 export function setStoredToken(token: string): void {
+  if (typeof localStorage === 'undefined') return;
   localStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearStoredToken(): void {
+  if (typeof localStorage === 'undefined') return;
   localStorage.removeItem(TOKEN_KEY);
 }
 
@@ -127,11 +130,28 @@ export const api = {
       body: JSON.stringify(trade),
     }),
 
-  updateTrade: (id: string, updates: Partial<Trade>) =>
-    request<{ trade: Trade }>(`/trades/${id}`, {
+  updateTrade: async (id: string, updates: Partial<Trade>) => {
+    const tradeId = typeof id === 'string' ? id.trim() : '';
+    const userAuthenticated = Boolean(getStoredToken());
+
+    if (!tradeId) {
+      console.warn('Trade update request:', {
+        tradeIdPresent: false,
+        userAuthenticated,
+      });
+      throw new Error('Cannot update trade: tradeId is missing');
+    }
+
+    console.info('Trade update request:', {
+      tradeIdPresent: true,
+      userAuthenticated,
+    });
+
+    return request<{ trade: Trade }>(`/trades/${encodeURIComponent(tradeId)}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
-    }),
+    });
+  },
 
   closeTrade: (id: string, data: { exitPrice: number; exitReason?: string; fees?: number }) =>
     request<{ trade: Trade }>(`/trades/${id}/close`, {

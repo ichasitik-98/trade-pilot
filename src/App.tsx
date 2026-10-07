@@ -4,7 +4,7 @@ import { User, TradingAccount, Trade } from './types.ts';
 import { Header } from './components/Header.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { MobileNav } from './components/MobileNav.tsx';
-import { TradeModal } from './components/TradeModal.tsx';
+import { TradeModal, TradePrefillData, resolveCanonicalTradeId } from './components/TradeModal.tsx';
 import { CsvImportModal } from './components/CsvImportModal.tsx';
 
 // Pages
@@ -30,6 +30,7 @@ export default function App() {
   // Modals
   const [showTradeModal, setShowTradeModal] = useState(false);
   const [tradeToEdit, setTradeToEdit] = useState<Trade | null>(null);
+  const [prefillData, setPrefillData] = useState<TradePrefillData | null>(null);
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
 
@@ -68,7 +69,62 @@ export default function App() {
   };
 
   const handleOpenTradeModal = (trade?: Trade) => {
-    setTradeToEdit(trade || null);
+    setPrefillData(null);
+    if (trade && resolveCanonicalTradeId(trade)) {
+      setTradeToEdit(trade);
+    } else {
+      setTradeToEdit(null);
+    }
+    setShowTradeModal(true);
+  };
+
+  const handlePrefillJournalFromSignal = async (
+    pair: string,
+    direction: 'LONG' | 'SHORT',
+    entryPrice: number,
+    stopLoss: number,
+    takeProfit: number,
+    timeframe: string = 'H1'
+  ) => {
+    const normalizedPair = pair.trim().toUpperCase();
+    const prefillPayload: TradePrefillData = {
+      accountId: activeAccount?.id || '',
+      pair: normalizedPair,
+      direction,
+      status: 'OPEN',
+      timeframe,
+      tradingSession: 'London',
+      entryPrice,
+      stopLoss,
+      takeProfit,
+      lotSize: 0.5,
+      riskPercent: 1.0,
+      fees: 0,
+      setup: 'Algorithmic Scanner Signal',
+      psychology: ['Disciplined'],
+      mistakeTags: [],
+    };
+
+    try {
+      const existingRes = await api.getTrades({
+        accountId: activeAccount?.id,
+        pair: normalizedPair,
+        status: 'OPEN',
+        limit: 1,
+      });
+      const existingTrade = existingRes.trades?.find((t) => Boolean(resolveCanonicalTradeId(t)));
+      if (existingTrade) {
+        setTradeToEdit(existingTrade);
+        setPrefillData(prefillPayload);
+        setShowTradeModal(true);
+        return;
+      }
+    } catch {
+      // Fallback to new trade prefill if lookup fails
+    }
+
+    setTradeToEdit(null);
+    setPrefillData(prefillPayload);
     setShowTradeModal(true);
   };
 
@@ -111,7 +167,7 @@ export default function App() {
           {currentTab === 'dashboard' && (
             <DashboardPage
               activeAccount={activeAccount}
-              onOpenTradeModal={() => handleOpenTradeModal()}
+              onOpenTradeModal={(t) => handleOpenTradeModal(t)}
               onNavigateTab={(tab) => setCurrentTab(tab)}
             />
           )}
@@ -135,31 +191,8 @@ export default function App() {
           {currentTab === 'pair-analysis' && (
             <PairAnalysisPage
               initialPair={selectedTerminalPair}
-              onOpenTradeModalWithPair={(p, dir, entry, sl, tp) => {
-                setTradeToEdit({
-                  id: '',
-                  userId: user.id,
-                  accountId: activeAccount?.id || '',
-                  pair: p,
-                  direction: dir,
-                  status: 'OPEN',
-                  timeframe: 'H1',
-                  tradingSession: 'London',
-                  entryPrice: entry,
-                  stopLoss: sl,
-                  takeProfit: tp,
-                  lotSize: 0.5,
-                  riskPercent: 1.0,
-                  riskAmount: (activeAccount?.balance || 10000) * 0.01,
-                  fees: 0,
-                  entryTime: new Date().toISOString(),
-                  setup: 'Algorithmic Scanner Signal',
-                  psychology: ['Disciplined'],
-                  mistakeTags: [],
-                  createdAt: new Date().toISOString(),
-                  updatedAt: new Date().toISOString(),
-                });
-                setShowTradeModal(true);
+              onOpenTradeModalWithPair={(p, dir, entry, sl, tp, tf) => {
+                handlePrefillJournalFromSignal(p, dir, entry, sl, tp, tf);
               }}
             />
           )}
@@ -190,13 +223,16 @@ export default function App() {
         <TradeModal
           activeAccount={activeAccount}
           tradeToEdit={tradeToEdit}
+          prefillData={prefillData}
           onClose={() => {
             setShowTradeModal(false);
             setTradeToEdit(null);
+            setPrefillData(null);
           }}
           onSaved={() => {
             setShowTradeModal(false);
             setTradeToEdit(null);
+            setPrefillData(null);
             initApp();
           }}
         />
