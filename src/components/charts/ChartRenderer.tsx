@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { ChartVisualCandle, SupportedChartType, IndicatorVisibility } from './types.ts';
+import { ChartVisualCandle, SupportedChartType, IndicatorVisibility, ChartSignalOverlay } from './types.ts';
 
 interface ChartRendererProps {
   candles: ChartVisualCandle[];
@@ -13,6 +13,7 @@ interface ChartRendererProps {
   visibleIndicators: IndicatorVisibility;
   supportLevel?: number | null;
   resistanceLevel?: number | null;
+  signalOverlay?: ChartSignalOverlay | null;
   showCrosshair: boolean;
   symbol: string;
   timeframe?: string;
@@ -25,6 +26,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   visibleIndicators,
   supportLevel,
   resistanceLevel,
+  signalOverlay,
   showCrosshair,
   symbol,
   timeframe = 'H1',
@@ -95,6 +97,20 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       max = Math.max(max, resistanceLevel);
     }
 
+    if (
+      signalOverlay &&
+      signalOverlay.entryPrice > 0 &&
+      signalOverlay.stopLoss > 0 &&
+      signalOverlay.takeProfit1 > 0
+    ) {
+      min = Math.min(min, signalOverlay.entryPrice, signalOverlay.stopLoss, signalOverlay.takeProfit1);
+      max = Math.max(max, signalOverlay.entryPrice, signalOverlay.stopLoss, signalOverlay.takeProfit1);
+      if (signalOverlay.takeProfit2 && signalOverlay.takeProfit2 > 0) {
+        min = Math.min(min, signalOverlay.takeProfit2);
+        max = Math.max(max, signalOverlay.takeProfit2);
+      }
+    }
+
     // Add a 4% buffer so candles don't touch plot edges
     const span = max - min || 1;
     const buffer = span * 0.04;
@@ -103,7 +119,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       maxPrice: max + buffer,
       priceRange: span + buffer * 2,
     };
-  }, [candles, visibleIndicators, supportLevel, resistanceLevel]);
+  }, [candles, visibleIndicators, supportLevel, resistanceLevel, signalOverlay]);
 
   // Coordinate conversion helpers
   const getY = (price: number | null | undefined): number => {
@@ -673,6 +689,189 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
             strokeWidth={2}
           />
         )}
+
+        {/* Signal Open Position Risk & Reward Zone Overlay */}
+        {signalOverlay &&
+          signalOverlay.entryPrice > 0 &&
+          signalOverlay.stopLoss > 0 &&
+          signalOverlay.takeProfit1 > 0 &&
+          (() => {
+            const boxStartIdx = Math.max(0, candles.length - Math.min(18, Math.floor(candles.length * 0.35)));
+            const boxX = getX(boxStartIdx);
+            const boxWidth = Math.max(60, dimensions.width - padding.right - boxX);
+
+            const yEntry = getY(signalOverlay.entryPrice);
+            const ySL = getY(signalOverlay.stopLoss);
+            const yTP1 = getY(signalOverlay.takeProfit1);
+            const yTP2 =
+              signalOverlay.takeProfit2 && signalOverlay.takeProfit2 > 0
+                ? getY(signalOverlay.takeProfit2)
+                : null;
+
+            const riskTop = Math.min(yEntry, ySL);
+            const riskHeight = Math.max(2, Math.abs(ySL - yEntry));
+
+            const rewardTargetY = yTP2 !== null ? yTP2 : yTP1;
+            const rewardTop = Math.min(yEntry, rewardTargetY);
+            const rewardHeight = Math.max(2, Math.abs(rewardTargetY - yEntry));
+
+            return (
+              <g className="pointer-events-none">
+                {/* Reward Shaded Zone (Entry to TP) */}
+                <rect
+                  x={boxX}
+                  y={rewardTop}
+                  width={boxWidth}
+                  height={rewardHeight}
+                  fill="#10b981"
+                  fillOpacity={0.11}
+                  stroke="#10b981"
+                  strokeOpacity={0.35}
+                  strokeWidth={1}
+                />
+
+                {/* Risk Shaded Zone (Entry to SL) */}
+                <rect
+                  x={boxX}
+                  y={riskTop}
+                  width={boxWidth}
+                  height={riskHeight}
+                  fill="#f43f5e"
+                  fillOpacity={0.13}
+                  stroke="#f43f5e"
+                  strokeOpacity={0.4}
+                  strokeWidth={1}
+                />
+
+                {/* TP2 Line & Label */}
+                {yTP2 !== null && signalOverlay.takeProfit2 && (
+                  <g>
+                    <line
+                      x1={boxX}
+                      y1={yTP2}
+                      x2={dimensions.width - padding.right}
+                      y2={yTP2}
+                      stroke="#10b981"
+                      strokeWidth={1.5}
+                      strokeDasharray="3 3"
+                    />
+                    <rect
+                      x={boxX + 4}
+                      y={yTP2 - 8}
+                      width={118}
+                      height={15}
+                      rx={3}
+                      fill="#064e3b"
+                      fillOpacity={0.92}
+                    />
+                    <text
+                      x={boxX + 8}
+                      y={yTP2 + 2.5}
+                      fill="#34d399"
+                      fontSize={9}
+                      fontFamily="monospace"
+                      fontWeight="bold"
+                    >
+                      TP2: ${formatPrice(signalOverlay.takeProfit2)} ({signalOverlay.riskReward2 ?? 3}R)
+                    </text>
+                  </g>
+                )}
+
+                {/* TP1 Line & Label */}
+                <g>
+                  <line
+                    x1={boxX}
+                    y1={yTP1}
+                    x2={dimensions.width - padding.right}
+                    y2={yTP1}
+                    stroke="#10b981"
+                    strokeWidth={1.5}
+                  />
+                  <rect
+                    x={boxX + 4}
+                    y={yTP1 - 8}
+                    width={118}
+                    height={15}
+                    rx={3}
+                    fill="#065f46"
+                    fillOpacity={0.95}
+                  />
+                  <text
+                    x={boxX + 8}
+                    y={yTP1 + 2.5}
+                    fill="#6ee7b7"
+                    fontSize={9}
+                    fontFamily="monospace"
+                    fontWeight="bold"
+                  >
+                    TP1: ${formatPrice(signalOverlay.takeProfit1)} ({signalOverlay.riskReward ?? 2}R)
+                  </text>
+                </g>
+
+                {/* Entry Line & Label */}
+                <g>
+                  <line
+                    x1={boxX}
+                    y1={yEntry}
+                    x2={dimensions.width - padding.right}
+                    y2={yEntry}
+                    stroke="#38bdf8"
+                    strokeWidth={1.75}
+                  />
+                  <rect
+                    x={boxX + 4}
+                    y={yEntry - 8}
+                    width={126}
+                    height={15}
+                    rx={3}
+                    fill="#0c4a6e"
+                    fillOpacity={0.95}
+                  />
+                  <text
+                    x={boxX + 8}
+                    y={yEntry + 2.5}
+                    fill="#7dd3fc"
+                    fontSize={9}
+                    fontFamily="monospace"
+                    fontWeight="bold"
+                  >
+                    {signalOverlay.direction === 'LONG' ? 'BUY' : 'SELL'} ENTRY: ${formatPrice(signalOverlay.entryPrice)}
+                  </text>
+                </g>
+
+                {/* Stop Loss Line & Label */}
+                <g>
+                  <line
+                    x1={boxX}
+                    y1={ySL}
+                    x2={dimensions.width - padding.right}
+                    y2={ySL}
+                    stroke="#f43f5e"
+                    strokeWidth={1.5}
+                  />
+                  <rect
+                    x={boxX + 4}
+                    y={ySL - 8}
+                    width={112}
+                    height={15}
+                    rx={3}
+                    fill="#881337"
+                    fillOpacity={0.95}
+                  />
+                  <text
+                    x={boxX + 8}
+                    y={ySL + 2.5}
+                    fill="#fda4af"
+                    fontSize={9}
+                    fontFamily="monospace"
+                    fontWeight="bold"
+                  >
+                    SL: ${formatPrice(signalOverlay.stopLoss)} (-1.0R)
+                  </text>
+                </g>
+              </g>
+            );
+          })()}
 
         {/* Live Price Horizontal Line & Right-Axis Badge */}
         {latestCandle && (

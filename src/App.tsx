@@ -84,7 +84,10 @@ export default function App() {
     entryPrice: number,
     stopLoss: number,
     takeProfit: number,
-    timeframe: string = 'H1'
+    timeframe: string = 'H1',
+    lotSize: number = 0.5,
+    riskPercent: number = 1.0,
+    setup: string = 'Algorithmic Scanner Signal'
   ) => {
     const normalizedPair = pair.trim().toUpperCase();
     const prefillPayload: TradePrefillData = {
@@ -97,10 +100,10 @@ export default function App() {
       entryPrice,
       stopLoss,
       takeProfit,
-      lotSize: 0.5,
-      riskPercent: 1.0,
+      lotSize,
+      riskPercent,
       fees: 0,
-      setup: 'Algorithmic Scanner Signal',
+      setup,
       psychology: ['Disciplined'],
       mistakeTags: [],
     };
@@ -185,15 +188,22 @@ export default function App() {
           {currentTab === 'analytics' && <AnalyticsPage activeAccount={activeAccount} />}
 
           {currentTab === 'scanner' && (
-            <ScannerPage onSelectPairForAnalysis={(pair) => handleSelectPairForTerminal(pair)} />
+            <ScannerPage
+              onSelectPairForAnalysis={(pair) => handleSelectPairForTerminal(pair)}
+              onQuickPrefillSignal={(p, dir, entry, sl, tp, tf) => {
+                handlePrefillJournalFromSignal(p, dir, entry, sl, tp, tf);
+              }}
+            />
           )}
 
           {currentTab === 'pair-analysis' && (
             <PairAnalysisPage
               initialPair={selectedTerminalPair}
-              onOpenTradeModalWithPair={(p, dir, entry, sl, tp, tf) => {
-                handlePrefillJournalFromSignal(p, dir, entry, sl, tp, tf);
+              activeAccount={activeAccount}
+              onOpenTradeModalWithPair={(p, dir, entry, sl, tp, tf, lot, riskPct, setupName) => {
+                handlePrefillJournalFromSignal(p, dir, entry, sl, tp, tf, lot, riskPct, setupName);
               }}
+              onTradeExecuted={() => initApp()}
             />
           )}
 

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateSignal, validateGeometry } from '../server/engines/signal-scoring.ts';
+import {
+  evaluateSignal,
+  validateGeometry,
+  generateOptimalSignalLevels,
+  buildOpenPositionRiskRewardPlan,
+} from '../server/engines/signal-scoring.ts';
 import { MarketCandle, TechnicalIndicator, MarketStructure } from '../server/types/index.ts';
 
 describe('Signal Engine & Confluence Scoring Tests', () => {
@@ -118,5 +123,46 @@ describe('Signal Engine & Confluence Scoring Tests', () => {
     // Valid SHORT
     const validShort = validateGeometry('SHORT', 100, 105, 90);
     expect(validShort.valid).toBe(true);
+  });
+
+  it('generates complete Open Position Risk & Reward plan with Entry, SL, TP1, TP2, TP3, Pips, and Breakeven Win Rate', () => {
+    const levels = generateOptimalSignalLevels({
+      pair: 'EURUSD',
+      direction: 'LONG',
+      currentPrice: 1.0850,
+      atr: 0.0020,
+      nearestSupport: 1.0825,
+      nearestResistance: 1.0920,
+    });
+
+    expect(levels.entryPrice).toBe(1.0850);
+    expect(levels.stopLoss).toBeLessThan(levels.entryPrice);
+    expect(levels.takeProfit1).toBeGreaterThan(levels.entryPrice);
+    expect(levels.takeProfit2).toBeGreaterThan(levels.takeProfit1);
+    expect(levels.takeProfit3).toBeGreaterThan(levels.takeProfit2);
+
+    const signal = evaluateSignal({
+      userId: 'u1',
+      pair: 'EURUSD',
+      timeframe: 'H1',
+      direction: 'LONG',
+      candles: mockCandles,
+      indicator: mockIndicator,
+      structure: mockStructure,
+      entryPrice: levels.entryPrice,
+      stopLoss: levels.stopLoss,
+      takeProfit1: levels.takeProfit1,
+      takeProfit2: levels.takeProfit2,
+    });
+
+    expect(signal.positionPlan).toBeDefined();
+    expect(signal.recommendedAction).toBe('OPEN_LONG');
+    expect(signal.actionLabel).toContain('OPEN BUY / LONG');
+    expect(signal.riskReward).toBeGreaterThanOrEqual(1.8);
+    expect(signal.riskReward2).toBeGreaterThan(signal.riskReward);
+    expect(signal.riskReward3).toBeGreaterThan(signal.riskReward2!);
+    expect(signal.stopLossPips).toBeGreaterThan(0);
+    expect(signal.tp1Pips).toBeGreaterThan(signal.stopLossPips!);
+    expect(signal.positionPlan?.breakevenWinRateTp1).toBeLessThan(40);
   });
 });

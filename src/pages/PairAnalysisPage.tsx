@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../services/api.ts';
 import { ChartEngine } from '../components/charts/index.ts';
+import { OpenPositionSignalPanel } from '../components/OpenPositionSignalPanel.tsx';
 import {
   Shield,
   Layers,
@@ -15,18 +16,23 @@ import {
   Clock,
   CheckCircle,
 } from 'lucide-react';
-import { MarketDataStatusCode } from '../types.ts';
+import { MarketDataStatusCode, TradingAccount } from '../types.ts';
 
 interface PairAnalysisPageProps {
   initialPair?: string;
+  activeAccount?: TradingAccount | null;
   onOpenTradeModalWithPair?: (
     pair: string,
     direction: 'LONG' | 'SHORT',
     entry: number,
     sl: number,
     tp: number,
-    timeframe?: string
+    timeframe?: string,
+    lotSize?: number,
+    riskPercent?: number,
+    setup?: string
   ) => void;
+  onTradeExecuted?: () => void;
 }
 
 const POPULAR_PAIRS = [
@@ -68,7 +74,12 @@ function formatJakartaTime(timestamp: number | string | Date | undefined): strin
   }
 }
 
-export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithPair }: PairAnalysisPageProps) {
+export function PairAnalysisPage({
+  initialPair = 'EURUSD',
+  activeAccount = null,
+  onOpenTradeModalWithPair,
+  onTradeExecuted,
+}: PairAnalysisPageProps) {
   const [selectedPair, setSelectedPair] = useState(initialPair);
   const [timeframe, setTimeframe] = useState('H1');
   const [data, setData] = useState<any | null>(() => {
@@ -497,10 +508,67 @@ export function PairAnalysisPage({ initialPair = 'EURUSD', onOpenTradeModalWithP
             onTimeframeChange={setTimeframe}
             supportLevel={data?.support?.price}
             resistanceLevel={data?.resistance?.price}
+            signalOverlay={
+              signal && signal.status !== 'BLOCKED' && signal.entryPrice > 0
+                ? {
+                    direction: signal.direction,
+                    entryPrice: signal.entryPrice,
+                    stopLoss: signal.stopLoss,
+                    takeProfit1: signal.takeProfit1,
+                    takeProfit2: signal.takeProfit2,
+                    takeProfit3: signal.takeProfit3,
+                    riskReward: signal.riskReward,
+                    riskReward2: signal.riskReward2,
+                    score: signal.score,
+                    status: signal.status,
+                  }
+                : null
+            }
             dataStatus={data?.dataStatus}
             dataQuality={data?.dataQuality}
             isRefreshing={isRefreshing}
             onRefresh={handleManualRefresh}
+          />
+
+          {/* Open Position Trading Signal & Risk/Reward Execution Panel */}
+          <OpenPositionSignalPanel
+            symbol={selectedPair}
+            timeframe={timeframe}
+            currentPrice={
+              data?.latestPrice?.price ??
+              (data?.candles?.length ? data.candles[data.candles.length - 1].close : 0)
+            }
+            hasRealData={hasRealData}
+            atr={data?.indicator?.atr14}
+            supportLevel={data?.support?.price}
+            resistanceLevel={data?.resistance?.price}
+            signal={signal}
+            activeAccount={activeAccount}
+            onSignalUpdated={(updatedSig) => {
+              setSignal(updatedSig);
+              const pairKey = `${selectedPair}:${timeframe}`;
+              const existingCache = pairAnalysisCache.get(pairKey);
+              if (existingCache) {
+                pairAnalysisCache.set(pairKey, {
+                  ...existingCache,
+                  signal: updatedSig,
+                });
+              }
+            }}
+            onOpenTradeModalWithSignal={(params) => {
+              onOpenTradeModalWithPair?.(
+                params.pair,
+                params.direction,
+                params.entryPrice,
+                params.stopLoss,
+                params.takeProfit,
+                params.timeframe,
+                params.lotSize,
+                params.riskPercent,
+                params.setup
+              );
+            }}
+            onTradeExecuted={onTradeExecuted}
           />
 
           {/* Technical Indicators Deep-Dive Grid */}

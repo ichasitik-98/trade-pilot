@@ -215,6 +215,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
                   { key: 'bollingerBands', label: 'Bollinger Bands (20, 2)', color: 'text-sky-300' },
                   { key: 'support', label: 'Technical Support Level', color: 'text-emerald-400' },
                   { key: 'resistance', label: 'Technical Resistance Level', color: 'text-rose-400' },
+                  { key: 'signalOverlay', label: 'Signal Open Position R:R Zone', color: 'text-emerald-300' },
                 ].map((item) => (
                   <label
                     key={item.key}
@@ -223,7 +224,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
                     <span className={item.color}>{item.label}</span>
                     <input
                       type="checkbox"
-                      checked={visibleIndicators[item.key as keyof IndicatorVisibility]}
+                      checked={Boolean(visibleIndicators[item.key as keyof IndicatorVisibility])}
                       onChange={() => onToggleIndicator(item.key as keyof IndicatorVisibility)}
                       className="rounded border-zinc-700 bg-zinc-950 text-emerald-500 focus:ring-0 cursor-pointer"
                     />
@@ -233,6 +234,20 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
             </div>
           )}
         </div>
+
+        {/* Quick Signal R:R Overlay Button */}
+        <button
+          onClick={() => onToggleIndicator('signalOverlay')}
+          title="Toggle Signal Open Position Risk & Reward Zone on Chart"
+          aria-label="Toggle Signal R:R Zone"
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-950 border text-xs cursor-pointer transition ${
+            visibleIndicators.signalOverlay !== false
+              ? 'border-emerald-500/40 text-emerald-400 font-bold'
+              : 'border-zinc-800 text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          <span>Signal R:R</span>
+        </button>
 
         {/* Sub-Panels Toggle Dropdown */}
         <div className="relative" ref={panelsRef}>

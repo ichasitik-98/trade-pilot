@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { SupportedChartType, IndicatorVisibility, IndicatorPanelsVisibility } from './types.ts';
+import { SupportedChartType, IndicatorVisibility, IndicatorPanelsVisibility, ChartSignalOverlay } from './types.ts';
 import { adaptCandlesForChart } from './adapter.ts';
 import { loadChartPreferences, saveChartPreferences } from './preferences.ts';
 import { ChartToolbar } from './ChartToolbar.tsx';
@@ -29,6 +29,7 @@ interface ChartEngineProps {
   onTimeframeChange: (tf: string) => void;
   supportLevel?: number | null;
   resistanceLevel?: number | null;
+  signalOverlay?: ChartSignalOverlay | null;
   dataStatus?: string;
   dataQuality?: number;
   isRefreshing?: boolean;
@@ -42,6 +43,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
   onTimeframeChange,
   supportLevel,
   resistanceLevel,
+  signalOverlay,
   dataStatus,
   isRefreshing,
   onRefresh,
@@ -180,6 +182,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
           visibleIndicators={visibleIndicators}
           supportLevel={visibleIndicators.support ? supportLevel : null}
           resistanceLevel={visibleIndicators.resistance ? resistanceLevel : null}
+          signalOverlay={visibleIndicators.signalOverlay !== false ? signalOverlay : null}
           showCrosshair={showCrosshair}
           symbol={symbol}
           timeframe={timeframe}

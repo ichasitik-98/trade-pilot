@@ -25,6 +25,7 @@ import {
 } from '../engines/market-structure.ts';
 import {
   evaluateSignal,
+  generateOptimalSignalLevels,
 } from '../engines/signal-scoring.ts';
 import {
   calculatePositionSize,
@@ -837,6 +838,41 @@ apiRouter.get('/market/scanner', authenticate, async (_req: Request, res: Respon
             ? 'CURRENT'
             : analysis.dataStatus;
 
+        const indicator = computeAllIndicators(candles as any);
+        const structure = analyzeMarketStructure(candles as any, 3);
+        const currentPrice = latestPrice.price || latestCandle.close;
+        const isBearish =
+          analysis.overallBias === 'BEARISH' ||
+          (analysis.overallBias === 'NEUTRAL' && (analysis.trend === 'BEARISH' || structure.trend === 'BEARISH'));
+        const dir: 'LONG' | 'SHORT' = isBearish ? 'SHORT' : 'LONG';
+
+        const levels = generateOptimalSignalLevels({
+          pair: sym,
+          direction: dir,
+          currentPrice,
+          atr: indicator?.atr14,
+          nearestSupport: analysis.nearestSupport?.price,
+          nearestResistance: analysis.nearestResistance?.price,
+        });
+
+        const evaluatedSignal = evaluateSignal({
+          userId: 'scanner',
+          pair: sym,
+          timeframe: 'H1',
+          direction: dir,
+          candles: candles as any,
+          indicator,
+          structure,
+          htfTrend: analysis.overallBias,
+          entryPrice: levels.entryPrice,
+          stopLoss: levels.stopLoss,
+          takeProfit1: levels.takeProfit1,
+          takeProfit2: levels.takeProfit2,
+          dataStatus: statusLabel === 'CURRENT' ? 'CURRENT' : (analysis.dataStatus as any),
+          dataQuality: analysis.dataQuality,
+          marketAnalysis: analysis,
+        });
+
         return {
           symbol: sym,
           pair: sym,
@@ -846,6 +882,24 @@ apiRouter.get('/market/scanner', authenticate, async (_req: Request, res: Respon
           momentum: analysis.momentum,
           volatility: analysis.volatility,
           bias: analysis.overallBias,
+          direction: evaluatedSignal.direction,
+          score: evaluatedSignal.score,
+          status: evaluatedSignal.status,
+          recommendedAction: evaluatedSignal.recommendedAction,
+          actionLabel: evaluatedSignal.actionLabel,
+          entryPrice: evaluatedSignal.entryPrice,
+          stopLoss: evaluatedSignal.stopLoss,
+          takeProfit1: evaluatedSignal.takeProfit1,
+          takeProfit2: evaluatedSignal.takeProfit2,
+          takeProfit3: evaluatedSignal.takeProfit3,
+          stopLossPips: evaluatedSignal.stopLossPips,
+          tp1Pips: evaluatedSignal.tp1Pips,
+          tp2Pips: evaluatedSignal.tp2Pips,
+          riskReward: evaluatedSignal.riskReward,
+          riskReward2: evaluatedSignal.riskReward2,
+          rsi: indicator?.rsi14 ?? null,
+          adx: indicator?.adx14 ?? null,
+          lastStructureEvent: structure.lastStructureEvent,
           dataQuality: analysis.dataQuality,
           dataStatus: statusLabel,
           lastUpdated: latestCandle ? new Date(latestCandle.timestamp).toISOString() : analysis.lastUpdated,
@@ -896,12 +950,18 @@ apiRouter.get('/market/pair', authenticate, async (req: Request, res: Response) 
     let defaultSignal = null;
     if (hasCandles) {
       const currentPrice = latestPrice.price || latestCandle!.close;
-      const isBearish = analysis.trend === 'BEARISH' || structure.trend === 'BEARISH';
+      const isBearish =
+        analysis.overallBias === 'BEARISH' ||
+        (analysis.overallBias === 'NEUTRAL' && (analysis.trend === 'BEARISH' || structure.trend === 'BEARISH'));
       const dir: 'LONG' | 'SHORT' = isBearish ? 'SHORT' : 'LONG';
-      const atr = syncResult.indicators?.atr14 ?? currentPrice * 0.003;
-      const sl = dir === 'LONG' ? currentPrice - atr * 1.5 : currentPrice + atr * 1.5;
-      const tp1 = dir === 'LONG' ? currentPrice + atr * 3.0 : currentPrice - atr * 3.0;
-      const tp2 = dir === 'LONG' ? currentPrice + atr * 4.5 : currentPrice - atr * 4.5;
+      const levels = generateOptimalSignalLevels({
+        pair: sym,
+        direction: dir,
+        currentPrice,
+        atr: syncResult.indicators?.atr14,
+        nearestSupport: analysis.nearestSupport?.price,
+        nearestResistance: analysis.nearestResistance?.price,
+      });
 
       defaultSignal = evaluateSignal({
         userId: user?.id || 'system',
@@ -911,10 +971,11 @@ apiRouter.get('/market/pair', authenticate, async (req: Request, res: Response) 
         candles: syncResult.candles as any,
         indicator: syncResult.indicators,
         structure,
-        entryPrice: currentPrice,
-        stopLoss: sl,
-        takeProfit1: tp1,
-        takeProfit2: tp2,
+        htfTrend: analysis.overallBias,
+        entryPrice: levels.entryPrice,
+        stopLoss: levels.stopLoss,
+        takeProfit1: levels.takeProfit1,
+        takeProfit2: levels.takeProfit2,
         dataStatus: effectiveStatus,
         dataQuality: syncResult.dataQuality,
         marketAnalysis: analysis,
@@ -1046,12 +1107,18 @@ apiRouter.post('/market/refresh/:symbol', authenticate, async (req: Request, res
     let defaultSignal = null;
     if (hasCandles) {
       const currentPrice = latestPrice.price || latestCandle!.close;
-      const isBearish = analysis.trend === 'BEARISH' || structure.trend === 'BEARISH';
+      const isBearish =
+        analysis.overallBias === 'BEARISH' ||
+        (analysis.overallBias === 'NEUTRAL' && (analysis.trend === 'BEARISH' || structure.trend === 'BEARISH'));
       const dir: 'LONG' | 'SHORT' = isBearish ? 'SHORT' : 'LONG';
-      const atr = syncResult.indicators?.atr14 ?? currentPrice * 0.003;
-      const sl = dir === 'LONG' ? currentPrice - atr * 1.5 : currentPrice + atr * 1.5;
-      const tp1 = dir === 'LONG' ? currentPrice + atr * 3.0 : currentPrice - atr * 3.0;
-      const tp2 = dir === 'LONG' ? currentPrice + atr * 4.5 : currentPrice - atr * 4.5;
+      const levels = generateOptimalSignalLevels({
+        pair: sym,
+        direction: dir,
+        currentPrice,
+        atr: syncResult.indicators?.atr14,
+        nearestSupport: analysis.nearestSupport?.price,
+        nearestResistance: analysis.nearestResistance?.price,
+      });
 
       defaultSignal = evaluateSignal({
         userId: user?.id || 'system',
@@ -1061,10 +1128,11 @@ apiRouter.post('/market/refresh/:symbol', authenticate, async (req: Request, res
         candles: syncResult.candles as any,
         indicator: syncResult.indicators,
         structure,
-        entryPrice: currentPrice,
-        stopLoss: sl,
-        takeProfit1: tp1,
-        takeProfit2: tp2,
+        htfTrend: analysis.overallBias,
+        entryPrice: levels.entryPrice,
+        stopLoss: levels.stopLoss,
+        takeProfit1: levels.takeProfit1,
+        takeProfit2: levels.takeProfit2,
         dataStatus: effectiveStatus,
         dataQuality: syncResult.dataQuality,
         marketAnalysis: analysis,
@@ -1132,8 +1200,13 @@ apiRouter.post('/market/signal', authenticate, async (req: Request, res: Respons
   const tf = parseTimeframe(timeframe);
 
   const syncResult = await MarketDataSyncService.syncHistoricalCandles(sym, tf, 100);
-  const analysis = await MarketDataSyncService.refreshSymbol(sym);
+  const analysis = await MarketDataSyncService.refreshSymbol(sym, false, tf);
   const structure = analyzeMarketStructure(syncResult.candles as any, 3);
+  const effectiveStatus = !syncResult.candles.length
+    ? 'NO_DATA'
+    : syncResult.freshness.isStale
+    ? 'STALE'
+    : 'CURRENT';
 
   const signal = evaluateSignal({
     userId: user.id,
@@ -1143,11 +1216,16 @@ apiRouter.post('/market/signal', authenticate, async (req: Request, res: Respons
     candles: syncResult.candles as any,
     indicator: syncResult.indicators,
     structure,
+    htfTrend: analysis.overallBias,
     entryPrice,
     stopLoss,
     takeProfit1,
-    takeProfit2: takeProfit2 || (direction === 'LONG' ? entryPrice + (entryPrice - stopLoss) * 2 : entryPrice - (stopLoss - entryPrice) * 2),
-    dataStatus: syncResult.dataStatus.status,
+    takeProfit2:
+      takeProfit2 ||
+      (direction === 'LONG'
+        ? entryPrice + Math.abs(entryPrice - stopLoss) * 3.0
+        : entryPrice - Math.abs(stopLoss - entryPrice) * 3.0),
+    dataStatus: effectiveStatus,
     dataQuality: syncResult.dataQuality,
     marketAnalysis: analysis,
   });
@@ -1159,14 +1237,14 @@ apiRouter.post('/market/signal', authenticate, async (req: Request, res: Respons
     action: 'SIGNAL_ANALYZED',
     entity: 'SIGNAL_RUN',
     entityId: signal.id,
-    details: `Evaluated ${direction} signal for ${sym} [Score: ${signal.score}, Status: ${signal.status}, Feed: ${syncResult.dataStatus.status}]`,
+    details: `Evaluated ${direction} signal for ${sym} [Score: ${signal.score}, Status: ${signal.status}, Feed: ${effectiveStatus}]`,
     ipAddress: req.ip,
   });
 
   return res.json({
     signal,
     marketAnalysis: analysis,
-    dataStatus: syncResult.dataStatus.status,
+    dataStatus: effectiveStatus,
     dataQuality: syncResult.dataQuality,
   });
 });

@@ -25,6 +25,7 @@ export const DEFAULT_PREFERENCES: ChartPreferences = {
     bollingerBands: false,
     support: true,
     resistance: true,
+    signalOverlay: true,
   },
   visiblePanels: {
     rsi: true,

@@ -171,6 +171,43 @@ export interface MarketAnalysis {
   lastUpdated: string;
 }
 
+export interface OpenPositionRiskRewardPlan {
+  pair: string;
+  timeframe: string;
+  direction: TradeDirection;
+  recommendedAction: 'OPEN_LONG' | 'OPEN_SHORT' | 'WAIT_CONFIRMATION' | 'NO_TRADE';
+  actionLabel: string;
+  executionType: 'MARKET' | 'LIMIT';
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  takeProfit3: number;
+  stopLossDistance: number;
+  tp1Distance: number;
+  tp2Distance: number;
+  tp3Distance: number;
+  stopLossPips: number;
+  tp1Pips: number;
+  tp2Pips: number;
+  tp3Pips: number;
+  stopLossPercent: number;
+  tp1Percent: number;
+  tp2Percent: number;
+  tp3Percent: number;
+  riskReward1: number;
+  riskReward2: number;
+  riskReward3: number;
+  atrValue: number;
+  atrMultiplierSl: number;
+  breakevenWinRateTp1: number;
+  breakevenWinRateTp2: number;
+  pipSize: number;
+  contractSize: number;
+  pricePrecision: number;
+  invalidationReason: string;
+}
+
 export interface ScannerItem {
   symbol?: string;
   pair: string;
@@ -183,7 +220,18 @@ export interface ScannerItem {
   score?: number;
   direction?: TradeDirection;
   status?: SignalStatus;
+  recommendedAction?: 'OPEN_LONG' | 'OPEN_SHORT' | 'WAIT_CONFIRMATION' | 'NO_TRADE';
+  actionLabel?: string;
+  entryPrice?: number;
+  stopLoss?: number;
+  takeProfit1?: number;
+  takeProfit2?: number;
+  takeProfit3?: number;
+  stopLossPips?: number;
+  tp1Pips?: number;
+  tp2Pips?: number;
   riskReward?: number;
+  riskReward2?: number;
   rsi?: number | null;
   adx?: number | null;
   lastStructureEvent?: string;

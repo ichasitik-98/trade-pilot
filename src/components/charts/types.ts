@@ -45,6 +45,19 @@ export interface ChartVisualCandle {
   minusDI?: number | null;
 }
 
+export interface ChartSignalOverlay {
+  direction: 'LONG' | 'SHORT';
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2?: number;
+  takeProfit3?: number;
+  riskReward?: number;
+  riskReward2?: number;
+  score?: number;
+  status?: string;
+}
+
 export interface IndicatorVisibility {
   ema20: boolean;
   ema50: boolean;
@@ -55,6 +68,7 @@ export interface IndicatorVisibility {
   bollingerBands: boolean;
   support: boolean;
   resistance: boolean;
+  signalOverlay?: boolean;
 }
 
 export interface IndicatorPanelsVisibility {

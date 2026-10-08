@@ -7,7 +7,222 @@ import {
   SignalRun,
   SignalComponent,
   MarketDataStatusCode,
+  OpenPositionRiskRewardPlan,
 } from '../types/index.ts';
+import { getInstrumentSpec } from './risk.ts';
+
+export function getPricePrecisionForPair(pair: string): number {
+  const normalized = pair.toUpperCase().replace('/', '').replace('-', '').trim();
+  if (normalized.includes('JPY') || normalized === 'XAUUSD' || normalized.includes('BTC') || normalized.includes('ETH') || normalized === 'US30' || normalized === 'NAS100' || normalized === 'SPX500') {
+    return 2;
+  }
+  return 4;
+}
+
+export function generateOptimalSignalLevels(params: {
+  pair: string;
+  direction: TradeDirection;
+  currentPrice: number;
+  atr?: number | null;
+  nearestSupport?: number | null;
+  nearestResistance?: number | null;
+  atrSlMultiplier?: number;
+  rrTp1?: number;
+  rrTp2?: number;
+  rrTp3?: number;
+}): {
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  takeProfit3: number;
+  atrUsed: number;
+} {
+  const {
+    pair,
+    direction,
+    currentPrice,
+    atr,
+    nearestSupport,
+    nearestResistance,
+    atrSlMultiplier = 1.5,
+    rrTp1 = 2.0,
+    rrTp2 = 3.0,
+    rrTp3 = 4.5,
+  } = params;
+
+  const precision = getPricePrecisionForPair(pair);
+  const effectiveAtr = atr && atr > 0 ? atr : currentPrice * 0.0025;
+  let slDistance = effectiveAtr * atrSlMultiplier;
+
+  // Snap to structural support/resistance with a small buffer if within reasonable ATR bounds (0.8x to 2.2x ATR)
+  if (direction === 'LONG' && nearestSupport && nearestSupport < currentPrice) {
+    const structDist = currentPrice - nearestSupport + effectiveAtr * 0.2;
+    if (structDist >= effectiveAtr * 0.8 && structDist <= effectiveAtr * 2.2) {
+      slDistance = structDist;
+    }
+  } else if (direction === 'SHORT' && nearestResistance && nearestResistance > currentPrice) {
+    const structDist = nearestResistance - currentPrice + effectiveAtr * 0.2;
+    if (structDist >= effectiveAtr * 0.8 && structDist <= effectiveAtr * 2.2) {
+      slDistance = structDist;
+    }
+  }
+
+  const entryPrice = Number(currentPrice.toFixed(precision));
+  const stopLoss = Number(
+    (direction === 'LONG' ? currentPrice - slDistance : currentPrice + slDistance).toFixed(precision)
+  );
+  const actualSlDist = Math.abs(entryPrice - stopLoss) || slDistance;
+  const takeProfit1 = Number(
+    (direction === 'LONG' ? entryPrice + actualSlDist * rrTp1 : entryPrice - actualSlDist * rrTp1).toFixed(precision)
+  );
+  const takeProfit2 = Number(
+    (direction === 'LONG' ? entryPrice + actualSlDist * rrTp2 : entryPrice - actualSlDist * rrTp2).toFixed(precision)
+  );
+  const takeProfit3 = Number(
+    (direction === 'LONG' ? entryPrice + actualSlDist * rrTp3 : entryPrice - actualSlDist * rrTp3).toFixed(precision)
+  );
+
+  return {
+    entryPrice,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+    takeProfit3,
+    atrUsed: effectiveAtr,
+  };
+}
+
+export function buildOpenPositionRiskRewardPlan(params: {
+  pair: string;
+  timeframe: string;
+  direction: TradeDirection;
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2?: number;
+  takeProfit3?: number;
+  atr?: number | null;
+  status: SignalStatus;
+  score: number;
+}): OpenPositionRiskRewardPlan {
+  const {
+    pair,
+    timeframe,
+    direction,
+    entryPrice,
+    stopLoss,
+    takeProfit1,
+    atr,
+    status,
+  } = params;
+
+  const spec = getInstrumentSpec(pair);
+  const pipSize = spec?.pipSize ?? (pair.includes('JPY') || pair === 'XAUUSD' ? 0.01 : 0.0001);
+  const contractSize = spec?.contractSize ?? 100000;
+  const pricePrecision = getPricePrecisionForPair(pair);
+
+  const stopLossDistance = Math.abs(entryPrice - stopLoss);
+  const tp1Distance = Math.abs(takeProfit1 - entryPrice);
+
+  const computedTp2 =
+    params.takeProfit2 && params.takeProfit2 > 0
+      ? params.takeProfit2
+      : Number(
+          (direction === 'LONG'
+            ? entryPrice + stopLossDistance * 3.0
+            : entryPrice - stopLossDistance * 3.0
+          ).toFixed(pricePrecision)
+        );
+  const computedTp3 =
+    params.takeProfit3 && params.takeProfit3 > 0
+      ? params.takeProfit3
+      : Number(
+          (direction === 'LONG'
+            ? entryPrice + stopLossDistance * 4.5
+            : entryPrice - stopLossDistance * 4.5
+          ).toFixed(pricePrecision)
+        );
+
+  const tp2Distance = Math.abs(computedTp2 - entryPrice);
+  const tp3Distance = Math.abs(computedTp3 - entryPrice);
+
+  const stopLossPips = pipSize > 0 ? Number((stopLossDistance / pipSize).toFixed(1)) : 0;
+  const tp1Pips = pipSize > 0 ? Number((tp1Distance / pipSize).toFixed(1)) : 0;
+  const tp2Pips = pipSize > 0 ? Number((tp2Distance / pipSize).toFixed(1)) : 0;
+  const tp3Pips = pipSize > 0 ? Number((tp3Distance / pipSize).toFixed(1)) : 0;
+
+  const stopLossPercent = entryPrice > 0 ? Number(((stopLossDistance / entryPrice) * 100).toFixed(3)) : 0;
+  const tp1Percent = entryPrice > 0 ? Number(((tp1Distance / entryPrice) * 100).toFixed(3)) : 0;
+  const tp2Percent = entryPrice > 0 ? Number(((tp2Distance / entryPrice) * 100).toFixed(3)) : 0;
+  const tp3Percent = entryPrice > 0 ? Number(((tp3Distance / entryPrice) * 100).toFixed(3)) : 0;
+
+  const riskReward1 = stopLossDistance > 0 ? Number((tp1Distance / stopLossDistance).toFixed(2)) : 0;
+  const riskReward2 = stopLossDistance > 0 ? Number((tp2Distance / stopLossDistance).toFixed(2)) : 0;
+  const riskReward3 = stopLossDistance > 0 ? Number((tp3Distance / stopLossDistance).toFixed(2)) : 0;
+
+  const atrValue = atr && atr > 0 ? atr : stopLossDistance / 1.5;
+  const atrMultiplierSl = atrValue > 0 ? Number((stopLossDistance / atrValue).toFixed(2)) : 1.5;
+
+  const breakevenWinRateTp1 = riskReward1 > 0 ? Number(((1 / (1 + riskReward1)) * 100).toFixed(1)) : 100;
+  const breakevenWinRateTp2 = riskReward2 > 0 ? Number(((1 / (1 + riskReward2)) * 100).toFixed(1)) : 100;
+
+  let recommendedAction: 'OPEN_LONG' | 'OPEN_SHORT' | 'WAIT_CONFIRMATION' | 'NO_TRADE' = 'WAIT_CONFIRMATION';
+  let actionLabel = 'WAIT FOR CONFIRMATION';
+
+  if (status === 'BLOCKED' || status === 'NO_SETUP') {
+    recommendedAction = 'NO_TRADE';
+    actionLabel = status === 'BLOCKED' ? 'NO TRADE (BLOCKED)' : 'NO TRADE SETUP';
+  } else if (status === 'VALID_SETUP' || status === 'STRONG_SETUP' || status === 'VERY_STRONG_SETUP') {
+    recommendedAction = direction === 'LONG' ? 'OPEN_LONG' : 'OPEN_SHORT';
+    actionLabel = direction === 'LONG' ? 'OPEN BUY / LONG' : 'OPEN SELL / SHORT';
+  } else {
+    recommendedAction = 'WAIT_CONFIRMATION';
+    actionLabel = direction === 'LONG' ? 'WATCH LONG CANDIDATE' : 'WATCH SHORT CANDIDATE';
+  }
+
+  const invalidationReason =
+    direction === 'LONG'
+      ? `Setup invalidated if price closes below Stop Loss ($${stopLoss.toFixed(pricePrecision)}, -${stopLossPips} pips / ${atrMultiplierSl}x ATR)`
+      : `Setup invalidated if price closes above Stop Loss ($${stopLoss.toFixed(pricePrecision)}, -${stopLossPips} pips / ${atrMultiplierSl}x ATR)`;
+
+  return {
+    pair,
+    timeframe,
+    direction,
+    recommendedAction,
+    actionLabel,
+    executionType: 'MARKET',
+    entryPrice: Number(entryPrice.toFixed(pricePrecision)),
+    stopLoss: Number(stopLoss.toFixed(pricePrecision)),
+    takeProfit1: Number(takeProfit1.toFixed(pricePrecision)),
+    takeProfit2: computedTp2,
+    takeProfit3: computedTp3,
+    stopLossDistance,
+    tp1Distance,
+    tp2Distance,
+    tp3Distance,
+    stopLossPips,
+    tp1Pips,
+    tp2Pips,
+    tp3Pips,
+    stopLossPercent,
+    tp1Percent,
+    tp2Percent,
+    tp3Percent,
+    riskReward1,
+    riskReward2,
+    riskReward3,
+    atrValue,
+    atrMultiplierSl,
+    breakevenWinRateTp1,
+    breakevenWinRateTp2,
+    pipSize,
+    contractSize,
+    pricePrecision,
+    invalidationReason,
+  };
+}
 
 export function classifyScore(score: number): SignalStatus {
   if (score < 40) return 'NO_SETUP';
@@ -537,6 +752,19 @@ export function evaluateSignal(params: {
   const status = classifyScore(totalScore);
   const explanation = `${direction} setup scored ${totalScore}/100 [${status}]. Key drivers: ${trendReason}; ${structureReason}; ${rrReason}.`;
 
+  const positionPlan = buildOpenPositionRiskRewardPlan({
+    pair,
+    timeframe,
+    direction,
+    entryPrice,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+    atr: indicator.atr14,
+    status,
+    score: totalScore,
+  });
+
   return {
     id: crypto.randomUUID(),
     userId,
@@ -556,7 +784,17 @@ export function evaluateSignal(params: {
     stopLoss,
     takeProfit1,
     takeProfit2,
+    takeProfit3: positionPlan.takeProfit3,
     riskReward,
+    riskReward2: positionPlan.riskReward2,
+    riskReward3: positionPlan.riskReward3,
+    stopLossPips: positionPlan.stopLossPips,
+    tp1Pips: positionPlan.tp1Pips,
+    tp2Pips: positionPlan.tp2Pips,
+    tp3Pips: positionPlan.tp3Pips,
+    recommendedAction: positionPlan.recommendedAction,
+    actionLabel: positionPlan.actionLabel,
+    positionPlan,
     status,
     explanation,
     components,
