@@ -1,13 +1,13 @@
 /**
  * ChartRenderer: Interactive MetaTrader 5 / TradingView-Style SVG Price Chart Engine
  * Features:
- * - Click-and-drag horizontal panning across historical candles & future projection space
+ * - 1:1 Slot-Based Horizontal Panning across historical candles & future projection space
  * - Free vertical price panning & Right Y-Axis drag-to-scale (compress/expand price axis)
  * - Bottom X-Axis drag-to-zoom & Mouse Wheel cursor-anchored zooming
- * - Touch 1-finger pan & 2-finger pinch-to-zoom
+ * - Native non-passive Touch 1-finger pan, axis scaling, & 2-finger pinch-to-zoom (locks page UI from scrolling)
  * - MT5 "Chart Shift" future projection margin with top shift triangle marker
  * - MT5 / TradingView Measure / Ruler tool (Shift + Drag or Ruler button) showing Pips, %, Bars
- * - Floating TradingView control bar & "Jump to Latest Candle (>>)" button
+ * - Full Chart Terminal Mode responsive auto-sizing
  */
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
@@ -29,6 +29,8 @@ import { ChartVisualCandle, SupportedChartType, IndicatorVisibility, ChartSignal
 interface ChartRendererProps {
   candles: ChartVisualCandle[];
   totalCandlesCount?: number;
+  totalSlots?: number;
+  leftSlotOffset?: number;
   panOffset?: number;
   rightMarginBars?: number;
   chartShift?: boolean;
@@ -58,15 +60,14 @@ interface MeasurePoint {
 
 export const ChartRenderer: React.FC<ChartRendererProps> = ({
   candles,
-  totalCandlesCount = candles.length,
+  totalSlots: propTotalSlots,
+  leftSlotOffset = 0,
   panOffset = 0,
   rightMarginBars = 0,
-  chartShift = true,
   onPanByBars,
   onZoomByDelta,
   onJumpToLatest,
   onResetView,
-  onToggleChartShift,
   chartType,
   visibleIndicators,
   supportLevel,
@@ -79,7 +80,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   onToggleFullscreen,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [dimensions, setDimensions] = useState({ width: 860, height: 430 });
+  const [dimensions, setDimensions] = useState({ width: 860, height: 440 });
   const [hoveredSlot, setHoveredSlot] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
 
@@ -104,6 +105,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     startPriceScale: number;
     startPricePan: number;
     priceRangeAtStart: number;
+    pinchLastDist: number | null;
   }>({
     mode: 'NONE',
     startX: 0,
@@ -114,18 +116,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     startPriceScale: 1,
     startPricePan: 0,
     priceRangeAtStart: 1,
-  });
-
-  const touchRef = useRef<{
-    lastX: number;
-    lastY: number;
-    lastDist: number | null;
-    accumulatedBars: number;
-  }>({
-    lastX: 0,
-    lastY: 0,
-    lastDist: null,
-    accumulatedBars: 0,
+    pinchLastDist: null,
   });
 
   // Reset vertical scale when symbol or timeframe changes
@@ -137,28 +128,51 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     setMeasureEnd(null);
   }, [symbol, timeframe]);
 
-  // ResizeObserver for responsive auto-sizing
+  const hasCandles = candles.length > 0;
+
+  // ResizeObserver for responsive auto-sizing (re-attaches cleanly on fullscreen toggle or data load)
   useEffect(() => {
-    if (!containerRef.current) return;
+    const el = containerRef.current;
+    if (!el) return;
+
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setDimensions({
+          width: Math.round(rect.width),
+          height: Math.max(320, Math.round(rect.height)),
+        });
+      }
+    };
+
+    updateSize();
+    const rafId = requestAnimationFrame(updateSize);
+
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         if (width > 0 && height > 0) {
-          setDimensions({ width, height: Math.max(340, height) });
+          setDimensions({
+            width: Math.round(width),
+            height: Math.max(320, Math.round(height)),
+          });
         }
       }
     });
-    observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, []);
+    observer.observe(el);
+    return () => {
+      cancelAnimationFrame(rafId);
+      observer.disconnect();
+    };
+  }, [hasCandles, isFullscreen]);
 
   const padding = { top: 24, right: 74, bottom: 32, left: 10 };
   const plotWidth = Math.max(60, dimensions.width - padding.left - padding.right);
   const plotHeight = Math.max(60, dimensions.height - padding.top - padding.bottom);
 
-  const totalSlots = Math.max(1, candles.length + rightMarginBars);
-  const candleSpacing = plotWidth / totalSlots;
-  const candleWidth = Math.max(2, Math.min(20, candleSpacing * 0.72));
+  const effectiveTotalSlots = Math.max(10, propTotalSlots ?? candles.length + rightMarginBars);
+  const candleSpacing = plotWidth / effectiveTotalSlots;
+  const candleWidth = Math.max(2, Math.min(22, candleSpacing * 0.72));
 
   // Compute baseline auto-fit price bounds across visible candles and active indicators
   const baseBounds = useMemo(() => {
@@ -207,7 +221,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       signalOverlay.entryPrice > 0 &&
       signalOverlay.stopLoss > 0 &&
       signalOverlay.takeProfit1 > 0 &&
-      panOffset <= 8
+      panOffset <= 12
     ) {
       min = Math.min(min, signalOverlay.entryPrice, signalOverlay.stopLoss, signalOverlay.takeProfit1);
       max = Math.max(max, signalOverlay.entryPrice, signalOverlay.stopLoss, signalOverlay.takeProfit1);
@@ -254,11 +268,18 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     [minPrice, priceRange, plotHeight, padding.top]
   );
 
-  const getX = useCallback(
+  const getSlotX = useCallback(
     (slotIndex: number): number => {
       return padding.left + (slotIndex + 0.5) * candleSpacing;
     },
     [padding.left, candleSpacing]
+  );
+
+  const getCandleX = useCallback(
+    (candleIdx: number): number => {
+      return getSlotX(leftSlotOffset + candleIdx);
+    },
+    [getSlotX, leftSlotOffset]
   );
 
   // Format Price & Pip size based on symbol precision
@@ -274,6 +295,212 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     [pricePrecision]
   );
 
+  // Keep a mutable ref of latest interactive metrics so window/touch listeners never detach mid-drag
+  const latestRef = useRef({
+    candleSpacing,
+    plotWidth,
+    plotHeight,
+    autoScaleY,
+    onPanByBars,
+    onZoomByDelta,
+     onResetView,
+    dimensions,
+    padding,
+    effectiveTotalSlots,
+    candles,
+    leftSlotOffset,
+    getPriceAtY,
+    priceScaleFactor,
+    pricePanOffset,
+    priceRange,
+    measureModeActive,
+  });
+
+  useEffect(() => {
+    latestRef.current = {
+      candleSpacing,
+      plotWidth,
+      plotHeight,
+      autoScaleY,
+      onPanByBars,
+      onZoomByDelta,
+      onResetView,
+      dimensions,
+      padding,
+      effectiveTotalSlots,
+      candles,
+      leftSlotOffset,
+      getPriceAtY,
+      priceScaleFactor,
+      pricePanOffset,
+      priceRange,
+      measureModeActive,
+    };
+  });
+
+  // Helper to start a drag gesture at clientX, clientY
+  const beginPointerGesture = useCallback((clientX: number, clientY: number, isShiftOrMeasure: boolean) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const L = latestRef.current;
+    const rect = el.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    // 1. Right Price Axis -> Y-axis vertical scaling
+    if (x >= L.dimensions.width - L.padding.right) {
+      dragRef.current = {
+        mode: 'SCALE_Y',
+        startX: clientX,
+        startY: clientY,
+        lastX: clientX,
+        lastY: clientY,
+        accumulatedBars: 0,
+        startPriceScale: L.priceScaleFactor,
+        startPricePan: L.pricePanOffset,
+        priceRangeAtStart: L.priceRange,
+        pinchLastDist: null,
+      };
+      setDragMode('SCALE_Y');
+      return;
+    }
+
+    // 2. Bottom Time Axis -> X-axis horizontal zoom
+    if (y >= L.dimensions.height - L.padding.bottom) {
+      dragRef.current = {
+        mode: 'SCALE_X',
+        startX: clientX,
+        startY: clientY,
+        lastX: clientX,
+        lastY: clientY,
+        accumulatedBars: 0,
+        startPriceScale: L.priceScaleFactor,
+        startPricePan: L.pricePanOffset,
+        priceRangeAtStart: L.priceRange,
+        pinchLastDist: null,
+      };
+      setDragMode('SCALE_X');
+      return;
+    }
+
+    // 3. Measure / Ruler tool (Shift + Drag or Ruler button active)
+    if (isShiftOrMeasure || L.measureModeActive) {
+      const slotIdx = Math.max(
+        0,
+        Math.min(L.effectiveTotalSlots - 1, Math.floor((x - L.padding.left) / L.candleSpacing))
+      );
+      const candleIdx = slotIdx - L.leftSlotOffset;
+      const candleAtSlot =
+        candleIdx >= 0 && candleIdx < L.candles.length ? L.candles[candleIdx] : undefined;
+      const pt: MeasurePoint = {
+        slotIndex: slotIdx,
+        price: L.getPriceAtY(y),
+        timestamp: candleAtSlot?.timestamp,
+      };
+      setMeasureStart(pt);
+      setMeasureEnd(pt);
+      dragRef.current = {
+        mode: 'MEASURE',
+        startX: clientX,
+        startY: clientY,
+        lastX: clientX,
+        lastY: clientY,
+        accumulatedBars: 0,
+        startPriceScale: L.priceScaleFactor,
+        startPricePan: L.pricePanOffset,
+        priceRangeAtStart: L.priceRange,
+        pinchLastDist: null,
+      };
+      setDragMode('MEASURE');
+      return;
+    }
+
+    // Clear previous ruler measurement if clicking normally
+    setMeasureStart(null);
+    setMeasureEnd(null);
+
+    // 4. Default: Pan Chart horizontally & vertically
+    dragRef.current = {
+      mode: 'PAN_CHART',
+      startX: clientX,
+      startY: clientY,
+      lastX: clientX,
+      lastY: clientY,
+      accumulatedBars: 0,
+      startPriceScale: L.priceScaleFactor,
+      startPricePan: L.pricePanOffset,
+      priceRangeAtStart: L.priceRange,
+      pinchLastDist: null,
+    };
+    setDragMode('PAN_CHART');
+  }, []);
+
+  // Helper to process pointer/touch movement at clientX, clientY
+  const movePointerGesture = useCallback(
+    (clientX: number, clientY: number, forceVerticalPan: boolean = false) => {
+      const state = dragRef.current;
+      if (state.mode === 'NONE') return;
+      const L = latestRef.current;
+
+      const dx = clientX - state.lastX;
+      const dy = clientY - state.lastY;
+      state.lastX = clientX;
+      state.lastY = clientY;
+
+      if (state.mode === 'PAN_CHART') {
+        // Horizontal drag -> pan bars (dragging right moves candles right to show older history on left)
+        const stepPx = Math.max(2.5, L.candleSpacing);
+        const exactBars = (clientX - state.startX) / stepPx;
+        const barStep = Math.trunc(exactBars - state.accumulatedBars);
+        if (barStep !== 0) {
+          state.accumulatedBars += barStep;
+          L.onPanByBars?.(barStep);
+        }
+
+        // Vertical drag -> pan price vertically if Y-axis is unlocked (Free Y) or modifier key held
+        if (!L.autoScaleY || forceVerticalPan) {
+          if (L.autoScaleY && Math.abs(clientY - state.startY) > 6) {
+            setAutoScaleY(false);
+          }
+          const priceDelta = (dy / Math.max(50, L.plotHeight)) * state.priceRangeAtStart;
+          setPricePanOffset((prev) => prev + priceDelta);
+        }
+      } else if (state.mode === 'SCALE_Y') {
+        const totalDy = clientY - state.startY;
+        const scaleMultiplier = Math.exp(totalDy * 0.0045);
+        setAutoScaleY(false);
+        setPriceScaleFactor(Math.max(0.25, Math.min(4.5, state.startPriceScale * scaleMultiplier)));
+      } else if (state.mode === 'SCALE_X') {
+        if (Math.abs(dx) >= 4) {
+          L.onZoomByDelta?.(dx > 0 ? -1 : 1, 0.85);
+        }
+      } else if (state.mode === 'MEASURE' && containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const x = Math.max(
+          L.padding.left,
+          Math.min(L.dimensions.width - L.padding.right, clientX - rect.left)
+        );
+        const y = Math.max(
+          L.padding.top,
+          Math.min(L.dimensions.height - L.padding.bottom, clientY - rect.top)
+        );
+        const slotIdx = Math.max(
+          0,
+          Math.min(L.effectiveTotalSlots - 1, Math.floor((x - L.padding.left) / L.candleSpacing))
+        );
+        const candleIdx = slotIdx - L.leftSlotOffset;
+        const candleAtSlot =
+          candleIdx >= 0 && candleIdx < L.candles.length ? L.candles[candleIdx] : undefined;
+        setMeasureEnd({
+          slotIndex: slotIdx,
+          price: L.getPriceAtY(y),
+          timestamp: candleAtSlot?.timestamp,
+        });
+      }
+    },
+    []
+  );
+
   // Non-passive mouse wheel listener for smooth TradingView / MT5 zooming & horizontal trackpad scrolling
   useEffect(() => {
     const el = containerRef.current;
@@ -281,109 +508,113 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
+      const L = latestRef.current;
       const rect = el.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
 
       // If cursor is over the right Price Axis, wheel scales the vertical Y-axis
-      if (mouseX >= dimensions.width - padding.right) {
+      if (mouseX >= L.dimensions.width - L.padding.right) {
         const factor = e.deltaY > 0 ? 1.08 : 0.92;
         setAutoScaleY(false);
         setPriceScaleFactor((prev) => Math.max(0.25, Math.min(4.0, prev * factor)));
         return;
       }
 
-      // Horizontal trackpad scroll pans the chart left/right
+      // Horizontal trackpad two-finger swipe pans the chart left/right
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && Math.abs(e.deltaX) > 2) {
-        const deltaBars = e.deltaX / Math.max(4, candleSpacing);
-        onPanByBars?.(-deltaBars);
+        const deltaBars = e.deltaX / Math.max(4, L.candleSpacing);
+        L.onPanByBars?.(-deltaBars);
         return;
       }
 
       // Vertical mouse wheel zooms in/out anchored at cursor position
-      const relX = Math.max(0, Math.min(plotWidth, mouseX - padding.left));
-      const anchorRatio = relX / Math.max(1, plotWidth);
+      const relX = Math.max(0, Math.min(L.plotWidth, mouseX - L.padding.left));
+      const anchorRatio = relX / Math.max(1, L.plotWidth);
       const zoomStep = e.deltaY > 0 ? 1 : -1;
-      onZoomByDelta?.(zoomStep, anchorRatio);
+      L.onZoomByDelta?.(zoomStep, anchorRatio);
     };
 
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
-  }, [dimensions.width, padding.right, padding.left, plotWidth, candleSpacing, onPanByBars, onZoomByDelta]);
+  }, [hasCandles, isFullscreen]);
 
-  // Non-passive touchmove listener to strictly lock website UI from scrolling/shifting while dragging chart
+  // Native non-passive Touch listeners on containerRef (prevents page scroll AND executes touch pan/pinch directly)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    const handleNativeTouchMove = (e: TouchEvent) => {
+    const handleTouchStartNative = (e: TouchEvent) => {
+      // Allow clicks on floating toolbar buttons inside the chart container
+      if ((e.target as HTMLElement)?.closest('button')) return;
+
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        beginPointerGesture(t.clientX, t.clientY, false);
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        dragRef.current.pinchLastDist = Math.hypot(dx, dy);
+        dragRef.current.mode = 'NONE';
+        setDragMode('NONE');
+      }
+    };
+
+    const handleTouchMoveNative = (e: TouchEvent) => {
+      if ((e.target as HTMLElement)?.closest('button')) return;
       if (e.cancelable) {
         e.preventDefault();
       }
-      e.stopPropagation();
-    };
 
-    el.addEventListener('touchmove', handleNativeTouchMove, { passive: false });
-    return () => el.removeEventListener('touchmove', handleNativeTouchMove);
-  }, []);
-
-  // Global window mousemove / mouseup for uninterrupted dragging even outside chart bounds
-  useEffect(() => {
-    if (dragMode === 'NONE') return;
-
-    const handleWindowMouseMove = (e: MouseEvent) => {
-      const state = dragRef.current;
-      if (state.mode === 'NONE') return;
-
-      const dx = e.clientX - state.lastX;
-      const dy = e.clientY - state.lastY;
-      state.lastX = e.clientX;
-      state.lastY = e.clientY;
-
-      if (state.mode === 'PAN_CHART') {
-        // Horizontal drag -> pan bars (dragging right moves into older history)
-        const exactBars = (e.clientX - state.startX) / Math.max(3, candleSpacing);
-        const barStep = Math.trunc(exactBars - state.accumulatedBars);
-        if (barStep !== 0) {
-          state.accumulatedBars += barStep;
-          onPanByBars?.(barStep);
+      const L = latestRef.current;
+      if (e.touches.length === 2 && dragRef.current.pinchLastDist !== null) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const diff = dist - dragRef.current.pinchLastDist;
+        if (Math.abs(diff) > 10) {
+          L.onZoomByDelta?.(diff > 0 ? -1 : 1, 0.5);
+          dragRef.current.pinchLastDist = dist;
         }
+        return;
+      }
 
-        // Vertical drag -> pan price vertically if userunlocked Y-axis or holds Alt/Ctrl
-        if (!autoScaleY || e.altKey || e.ctrlKey) {
-          if (autoScaleY && Math.abs(e.clientY - state.startY) > 6) {
-            setAutoScaleY(false);
-          }
-          const priceDelta = (dy / Math.max(50, plotHeight)) * state.priceRangeAtStart;
-          setPricePanOffset((prev) => prev + priceDelta);
-        }
-      } else if (state.mode === 'SCALE_Y') {
-        // Dragging vertically on the Right Price Axis compresses/expands vertical price scale
-        const totalDy = e.clientY - state.startY;
-        const scaleMultiplier = Math.exp(totalDy * 0.0045);
-        setAutoScaleY(false);
-        setPriceScaleFactor(Math.max(0.25, Math.min(4.5, state.startPriceScale * scaleMultiplier)));
-      } else if (state.mode === 'SCALE_X') {
-        // Dragging horizontally on the Bottom Time Axis zooms candle density
-        if (Math.abs(dx) >= 4) {
-          onZoomByDelta?.(dx > 0 ? -1 : 1, 0.85);
-        }
-      } else if (state.mode === 'MEASURE' && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        const x = Math.max(padding.left, Math.min(dimensions.width - padding.right, e.clientX - rect.left));
-        const y = Math.max(padding.top, Math.min(dimensions.height - padding.bottom, e.clientY - rect.top));
-        const slotIdx = Math.max(0, Math.min(totalSlots - 1, Math.floor((x - padding.left) / candleSpacing)));
-        const candleAtSlot = slotIdx < candles.length ? candles[slotIdx] : undefined;
-        setMeasureEnd({
-          slotIndex: slotIdx,
-          price: getPriceAtY(y),
-          timestamp: candleAtSlot?.timestamp,
-        });
+      if (e.touches.length === 1 && dragRef.current.mode !== 'NONE') {
+        const t = e.touches[0];
+        movePointerGesture(t.clientX, t.clientY, false);
       }
     };
 
-    const handleWindowMouseUp = () => {
+    const handleTouchEndNative = () => {
       dragRef.current.mode = 'NONE';
+      dragRef.current.pinchLastDist = null;
       setDragMode('NONE');
+    };
+
+    el.addEventListener('touchstart', handleTouchStartNative, { passive: false });
+    el.addEventListener('touchmove', handleTouchMoveNative, { passive: false });
+    el.addEventListener('touchend', handleTouchEndNative);
+    el.addEventListener('touchcancel', handleTouchEndNative);
+
+    return () => {
+      el.removeEventListener('touchstart', handleTouchStartNative);
+      el.removeEventListener('touchmove', handleTouchMoveNative);
+      el.removeEventListener('touchend', handleTouchEndNative);
+      el.removeEventListener('touchcancel', handleTouchEndNative);
+    };
+  }, [hasCandles, isFullscreen, beginPointerGesture, movePointerGesture]);
+
+  // Global window mousemove / mouseup for uninterrupted mouse dragging even outside chart bounds
+  useEffect(() => {
+    const handleWindowMouseMove = (e: MouseEvent) => {
+      if (dragRef.current.mode === 'NONE') return;
+      movePointerGesture(e.clientX, e.clientY, Boolean(e.altKey || e.ctrlKey));
+    };
+
+    const handleWindowMouseUp = () => {
+      if (dragRef.current.mode !== 'NONE') {
+        dragRef.current.mode = 'NONE';
+        setDragMode('NONE');
+      }
     };
 
     window.addEventListener('mousemove', handleWindowMouseMove);
@@ -392,112 +623,13 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       window.removeEventListener('mousemove', handleWindowMouseMove);
       window.removeEventListener('mouseup', handleWindowMouseUp);
     };
-  }, [
-    dragMode,
-    candleSpacing,
-    plotHeight,
-    autoScaleY,
-    onPanByBars,
-    onZoomByDelta,
-    dimensions.width,
-    dimensions.height,
-    padding.left,
-    padding.right,
-    padding.top,
-    padding.bottom,
-    totalSlots,
-    candles,
-    getPriceAtY,
-  ]);
+  }, [movePointerGesture]);
 
   // Mouse Down on SVG
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (e.button !== 0 || !containerRef.current) return;
+    if (e.button !== 0) return;
     e.preventDefault();
-    e.stopPropagation();
-    const rect = containerRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    // 1. Check if clicked on Right Price Axis (Y-axis scaling)
-    if (x >= dimensions.width - padding.right) {
-      dragRef.current = {
-        mode: 'SCALE_Y',
-        startX: e.clientX,
-        startY: e.clientY,
-        lastX: e.clientX,
-        lastY: e.clientY,
-        accumulatedBars: 0,
-        startPriceScale: priceScaleFactor,
-        startPricePan: pricePanOffset,
-        priceRangeAtStart: priceRange,
-      };
-      setDragMode('SCALE_Y');
-      return;
-    }
-
-    // 2. Check if clicked on Bottom Time Axis (X-axis zoom scaling)
-    if (y >= dimensions.height - padding.bottom) {
-      dragRef.current = {
-        mode: 'SCALE_X',
-        startX: e.clientX,
-        startY: e.clientY,
-        lastX: e.clientX,
-        lastY: e.clientY,
-        accumulatedBars: 0,
-        startPriceScale: priceScaleFactor,
-        startPricePan: pricePanOffset,
-        priceRangeAtStart: priceRange,
-      };
-      setDragMode('SCALE_X');
-      return;
-    }
-
-    // 3. Check if Shift-click or Measure Tool is active (MT5 Crosshair Measure / TradingView Ruler)
-    if (e.shiftKey || measureModeActive) {
-      const slotIdx = Math.max(0, Math.min(totalSlots - 1, Math.floor((x - padding.left) / candleSpacing)));
-      const candleAtSlot = slotIdx < candles.length ? candles[slotIdx] : undefined;
-      const pt: MeasurePoint = {
-        slotIndex: slotIdx,
-        price: getPriceAtY(y),
-        timestamp: candleAtSlot?.timestamp,
-      };
-      setMeasureStart(pt);
-      setMeasureEnd(pt);
-      dragRef.current = {
-        mode: 'MEASURE',
-        startX: e.clientX,
-        startY: e.clientY,
-        lastX: e.clientX,
-        lastY: e.clientY,
-        accumulatedBars: 0,
-        startPriceScale: priceScaleFactor,
-        startPricePan: pricePanOffset,
-        priceRangeAtStart: priceRange,
-      };
-      setDragMode('MEASURE');
-      return;
-    }
-
-    // Clear any completed ruler measurement on normal click
-    if (measureStart && measureEnd) {
-      setMeasureStart(null);
-      setMeasureEnd(null);
-    }
-
-    // 4. Default: Pan Chart horizontally (and vertically if Y-scale is unlocked)
-    dragRef.current = {
-      mode: 'PAN_CHART',
-      startX: e.clientX,
-      startY: e.clientY,
-      lastX: e.clientX,
-      lastY: e.clientY,
-      accumulatedBars: 0,
-      startPriceScale: priceScaleFactor,
-      startPricePan: pricePanOffset,
-      priceRangeAtStart: priceRange,
-    };
-    setDragMode('PAN_CHART');
+    beginPointerGesture(e.clientX, e.clientY, Boolean(e.shiftKey));
   };
 
   // Double-click to reset Y-axis auto-fit or reset view
@@ -513,49 +645,6 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     }
   };
 
-  // Touch handlers for Mobile / Tablet 1-finger pan & 2-finger pinch zoom
-  const handleTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
-    if (e.touches.length === 1) {
-      touchRef.current = {
-        lastX: e.touches[0].clientX,
-        lastY: e.touches[0].clientY,
-        lastDist: null,
-        accumulatedBars: 0,
-      };
-    } else if (e.touches.length === 2) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      touchRef.current.lastDist = Math.hypot(dx, dy);
-    }
-  };
-
-  const handleTouchMove = (e: React.TouchEvent<SVGSVGElement>) => {
-    if (e.touches.length === 1 && touchRef.current.lastDist === null) {
-      const dx = e.touches[0].clientX - touchRef.current.lastX;
-      const dy = e.touches[0].clientY - touchRef.current.lastY;
-      const exactBars = dx / Math.max(3, candleSpacing);
-      const barStep = Math.trunc(exactBars - touchRef.current.accumulatedBars);
-      if (barStep !== 0) {
-        touchRef.current.accumulatedBars += barStep;
-        onPanByBars?.(barStep);
-      }
-      if (!autoScaleY && Math.abs(dy) > 2) {
-        const priceDelta = (dy / Math.max(50, plotHeight)) * priceRange;
-        setPricePanOffset((prev) => prev + priceDelta);
-        touchRef.current.lastY = e.touches[0].clientY;
-      }
-    } else if (e.touches.length === 2 && touchRef.current.lastDist !== null) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.hypot(dx, dy);
-      const diff = dist - touchRef.current.lastDist;
-      if (Math.abs(diff) > 12) {
-        onZoomByDelta?.(diff > 0 ? -1 : 1, 0.5);
-        touchRef.current.lastDist = dist;
-      }
-    }
-  };
-
   // Handle Mouse Hover / Crosshair
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!containerRef.current || candles.length === 0) return;
@@ -567,7 +656,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
 
     const relX = x - padding.left;
     const slotIdx = Math.floor(relX / candleSpacing);
-    if (slotIdx >= 0 && slotIdx < totalSlots) {
+    if (slotIdx >= 0 && slotIdx < effectiveTotalSlots) {
       setHoveredSlot(slotIdx);
     } else {
       setHoveredSlot(null);
@@ -579,7 +668,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     setMousePos(null);
   };
 
-  // SVG Path generator for line/overlay series
+  // SVG Path generator for line/overlay series using slot-aligned candle coordinates
   const buildLinePath = useCallback(
     (getValue: (c: ChartVisualCandle) => number | null | undefined): string => {
       let path = '';
@@ -588,7 +677,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       candles.forEach((c, i) => {
         const val = getValue(c);
         if (val !== null && val !== undefined) {
-          const x = getX(i);
+          const x = getCandleX(i);
           const y = getY(val);
           if (!isDrawing) {
             path += `M ${x.toFixed(2)} ${y.toFixed(2)}`;
@@ -603,7 +692,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
 
       return path;
     },
-    [candles, getX, getY]
+    [candles, getCandleX, getY]
   );
 
   // Bollinger Bands shaded area path
@@ -614,8 +703,8 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
 
     candles.forEach((c, i) => {
       if (c.bbUpper && c.bbLower) {
-        upperPoints.push({ x: getX(i), y: getY(c.bbUpper) });
-        lowerPoints.push({ x: getX(i), y: getY(c.bbLower) });
+        upperPoints.push({ x: getCandleX(i), y: getY(c.bbUpper) });
+        lowerPoints.push({ x: getCandleX(i), y: getY(c.bbLower) });
       }
     });
 
@@ -630,22 +719,22 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     }
     d += ' Z';
     return d;
-  }, [candles, visibleIndicators.bollingerBands, getX, getY]);
+  }, [candles, visibleIndicators.bollingerBands, getCandleX, getY]);
 
   // Area chart path
   const areaChartPath = useMemo(() => {
     if (chartType !== 'AREA' || candles.length === 0) return '';
-    const firstX = getX(0);
-    const lastX = getX(candles.length - 1);
+    const firstX = getCandleX(0);
+    const lastX = getCandleX(candles.length - 1);
     const bottomY = padding.top + plotHeight;
 
     let d = `M ${firstX.toFixed(2)} ${bottomY.toFixed(2)}`;
     candles.forEach((c, i) => {
-      d += ` L ${getX(i).toFixed(2)} ${getY(c.close).toFixed(2)}`;
+      d += ` L ${getCandleX(i).toFixed(2)} ${getY(c.close).toFixed(2)}`;
     });
     d += ` L ${lastX.toFixed(2)} ${bottomY.toFixed(2)} Z`;
     return d;
-  }, [candles, chartType, getX, getY, padding.top, plotHeight]);
+  }, [candles, chartType, getCandleX, getY, padding.top, plotHeight]);
 
   const formatAxisTime = (ts: number) => {
     const d = new Date(ts);
@@ -710,11 +799,11 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     return ticks;
   }, [minPrice, priceRange]);
 
-  // Generate vertical time grid lines across visible candles + future projection slots
+  // Generate vertical time grid lines across all horizontal slots (history + visible candles + future space)
   const timeGridTicks = useMemo(() => {
     if (candles.length === 0) return [];
-    const ticks: { index: number; timestamp: number; isFuture?: boolean }[] = [];
-    const step = Math.max(1, Math.floor(totalSlots / 6));
+    const ticks: { slotIndex: number; timestamp: number; isOutsideData?: boolean }[] = [];
+    const step = Math.max(1, Math.floor(effectiveTotalSlots / 6));
     const tfMs =
       timeframe === 'M1'
         ? 60_000
@@ -730,27 +819,36 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         ? 14_400_000
         : 86_400_000;
 
+    const firstTs = candles[0].timestamp;
     const lastTs = candles[candles.length - 1].timestamp;
 
-    for (let i = 0; i < totalSlots; i += step) {
-      if (i < candles.length) {
-        ticks.push({ index: i, timestamp: candles[i].timestamp });
-      } else {
-        const futureOffsetBars = i - (candles.length - 1);
+    for (let s = 0; s < effectiveTotalSlots; s += step) {
+      const candleIdx = s - leftSlotOffset;
+      if (candleIdx >= 0 && candleIdx < candles.length) {
+        ticks.push({ slotIndex: s, timestamp: candles[candleIdx].timestamp });
+      } else if (candleIdx < 0) {
         ticks.push({
-          index: i,
+          slotIndex: s,
+          timestamp: firstTs + candleIdx * tfMs,
+          isOutsideData: true,
+        });
+      } else {
+        const futureOffsetBars = candleIdx - (candles.length - 1);
+        ticks.push({
+          slotIndex: s,
           timestamp: lastTs + futureOffsetBars * tfMs,
-          isFuture: true,
+          isOutsideData: true,
         });
       }
     }
     return ticks;
-  }, [candles, totalSlots, timeframe]);
+  }, [candles, effectiveTotalSlots, leftSlotOffset, timeframe]);
 
   const latestCandle = candles.length > 0 ? candles[candles.length - 1] : null;
+  const hoveredCandleIdx = hoveredSlot !== null ? hoveredSlot - leftSlotOffset : -1;
   const activeCandle =
-    hoveredSlot !== null && hoveredSlot >= 0 && hoveredSlot < candles.length
-      ? candles[hoveredSlot]
+    hoveredCandleIdx >= 0 && hoveredCandleIdx < candles.length
+      ? candles[hoveredCandleIdx]
       : latestCandle;
 
   // Dynamic cursor style based on hover zone and drag mode
@@ -789,8 +887,9 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   return (
     <div
       ref={containerRef}
+      style={{ touchAction: 'none', overscrollBehavior: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
       className={`relative w-full ${
-        isFullscreen ? 'h-full min-h-[380px] flex-1' : 'h-96 sm:h-[460px]'
+        isFullscreen ? 'h-full min-h-[360px] flex-1' : 'h-96 sm:h-[460px]'
       } select-none touch-none overscroll-none bg-zinc-950 rounded-xl overflow-hidden border border-zinc-800/80 group`}
     >
       {/* Top HUD: Floating OHLCV, Active Indicators & Interactive Mode Badges (TradingView / MT5 Style) */}
@@ -877,7 +976,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       <div className="absolute bottom-9 left-3 z-20 flex items-center gap-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 px-2 py-1 rounded-lg shadow-xl text-[11px] font-mono opacity-90 group-hover:opacity-100 transition">
         <button
           type="button"
-          onClick={() => onPanByBars?.(10)}
+          onClick={() => onPanByBars?.(8)}
           title="Geser ke Kiri (Candle Historis)"
           className="p-1 rounded hover:bg-zinc-800 text-zinc-300 hover:text-emerald-400 cursor-pointer transition"
         >
@@ -901,7 +1000,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         </button>
         <button
           type="button"
-          onClick={() => onPanByBars?.(-10)}
+          onClick={() => onPanByBars?.(-8)}
           title="Geser ke Kanan (Menuju Candle Terbaru)"
           className="p-1 rounded hover:bg-zinc-800 text-zinc-300 hover:text-emerald-400 cursor-pointer transition"
         >
@@ -1000,8 +1099,8 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         )}
       </div>
 
-      {/* Floating "Jump to Latest Candle (>>)" Button when Panned into History */}
-      {panOffset > 0 && (
+      {/* Floating "Jump to Latest Candle (>>)" Button when Panned */}
+      {panOffset !== 0 && (
         <button
           type="button"
           onClick={() => {
@@ -1012,22 +1111,27 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
           }}
           className="absolute bottom-9 right-20 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-mono text-xs font-extrabold shadow-lg shadow-emerald-950/50 cursor-pointer transition"
         >
-          <span>Historis (-{Math.round(panOffset)} bar) &bull; Ke Candle Terkini</span>
+          <span>
+            {panOffset > 0
+              ? `Historis (-${Math.round(panOffset)} bar)`
+              : `Proyeksi (+${Math.abs(Math.round(panOffset))} bar)`}{' '}
+            &bull; Ke Candle Terkini
+          </span>
           <FastForward className="w-3.5 h-3.5 fill-current" />
         </button>
       )}
 
       {/* Primary SVG Chart Plot Area */}
       <svg
-        width={dimensions.width}
-        height={dimensions.height}
+        width="100%"
+        height="100%"
+        viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
         onDoubleClick={handleDoubleClick}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        className={`w-full h-full touch-none overscroll-none select-none ${svgCursorClass}`}
+        style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+        className={`w-full h-full touch-none overscroll-none select-none block ${svgCursorClass}`}
       >
         <defs>
           <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1114,7 +1218,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
 
         {/* Vertical Time Grid Lines & Bottom-Axis Labels */}
         {timeGridTicks.map((tick, idx) => {
-          const x = getX(tick.index);
+          const x = getSlotX(tick.slotIndex);
           return (
             <g key={idx}>
               <line
@@ -1122,14 +1226,14 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
                 y1={padding.top}
                 x2={x}
                 y2={dimensions.height - padding.bottom}
-                stroke={tick.isFuture ? '#18181b' : '#1f1f23'}
+                stroke={tick.isOutsideData ? '#18181b' : '#1f1f23'}
                 strokeWidth={1}
                 strokeDasharray="2 3"
               />
               <text
                 x={x}
                 y={dimensions.height - 11}
-                fill={tick.isFuture ? '#52525b' : '#a1a1aa'}
+                fill={tick.isOutsideData ? '#52525b' : '#a1a1aa'}
                 fontSize={9}
                 fontFamily="monospace"
                 textAnchor="middle"
@@ -1144,7 +1248,8 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         {rightMarginBars > 0 && candles.length > 0 && (
           <g className="pointer-events-none">
             {(() => {
-              const shiftX = getX(candles.length - 1) + candleSpacing * 0.5;
+              const shiftX = getCandleX(candles.length - 1) + candleSpacing * 0.5;
+              if (shiftX < padding.left || shiftX > dimensions.width - padding.right) return null;
               return (
                 <>
                   <line
@@ -1245,7 +1350,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
           {/* OHLC BAR CHART Rendering */}
           {chartType === 'OHLC' &&
             candles.map((c, i) => {
-              const x = getX(i);
+              const x = getCandleX(i);
               const yHigh = getY(c.high);
               const yLow = getY(c.low);
               const yOpen = getY(c.open);
@@ -1265,7 +1370,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
           {/* CANDLESTICK & HEIKIN ASHI Rendering */}
           {(chartType === 'CANDLESTICK' || chartType === 'HEIKIN_ASHI') &&
             candles.map((c, i) => {
-              const x = getX(i);
+              const x = getCandleX(i);
               const yHigh = getY(c.high);
               const yLow = getY(c.low);
               const yOpen = getY(c.open);
@@ -1319,7 +1424,10 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
             signalOverlay.takeProfit1 > 0 &&
             (() => {
               const anchorCandleIdx = Math.max(0, candles.length - Math.min(10, Math.floor(candles.length * 0.2)));
-              const boxX = getX(anchorCandleIdx);
+              const boxX = Math.max(
+                padding.left + 8,
+                Math.min(dimensions.width - padding.right - 135, getCandleX(anchorCandleIdx))
+              );
               const boxWidth = Math.max(70, dimensions.width - padding.right - boxX);
 
               const yEntry = getY(signalOverlay.entryPrice);
@@ -1499,9 +1607,9 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
           {measureStart &&
             measureEnd &&
             (() => {
-              const x1 = getX(measureStart.slotIndex);
+              const x1 = getSlotX(measureStart.slotIndex);
               const y1 = getY(measureStart.price);
-              const x2 = getX(measureEnd.slotIndex);
+              const x2 = getSlotX(measureEnd.slotIndex);
               const y2 = getY(measureEnd.price);
 
               const boxLeft = Math.min(x1, x2);
@@ -1665,77 +1773,88 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         )}
 
         {/* Interactive Crosshair (Cursor Tracker) */}
-        {showCrosshair && mousePos && mousePos.x <= dimensions.width - padding.right && mousePos.y <= dimensions.height - padding.bottom && (
-          <g className="pointer-events-none">
-            {/* Vertical crosshair line */}
-            <line
-              x1={mousePos.x}
-              y1={padding.top}
-              x2={mousePos.x}
-              y2={dimensions.height - padding.bottom}
-              stroke="#71717a"
-              strokeWidth={1}
-              strokeDasharray="3 3"
-            />
-            {/* Horizontal crosshair line */}
-            <line
-              x1={padding.left}
-              y1={mousePos.y}
-              x2={dimensions.width - padding.right}
-              y2={mousePos.y}
-              stroke="#71717a"
-              strokeWidth={1}
-              strokeDasharray="3 3"
-            />
+        {showCrosshair &&
+          mousePos &&
+          mousePos.x <= dimensions.width - padding.right &&
+          mousePos.y <= dimensions.height - padding.bottom && (
+            <g className="pointer-events-none">
+              {/* Vertical crosshair line */}
+              <line
+                x1={mousePos.x}
+                y1={padding.top}
+                x2={mousePos.x}
+                y2={dimensions.height - padding.bottom}
+                stroke="#71717a"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+              />
+              {/* Horizontal crosshair line */}
+              <line
+                x1={padding.left}
+                y1={mousePos.y}
+                x2={dimensions.width - padding.right}
+                y2={mousePos.y}
+                stroke="#71717a"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+              />
 
-            {/* Price badge on right axis */}
-            <rect
-              x={dimensions.width - padding.right + 2}
-              y={mousePos.y - 9}
-              width={68}
-              height={18}
-              rx={3}
-              fill="#27272a"
-              stroke="#52525b"
-            />
-            <text
-              x={dimensions.width - padding.right + 6}
-              y={mousePos.y + 3}
-              fill="#f4f4f5"
-              fontSize={10}
-              fontFamily="monospace"
-              fontWeight="bold"
-            >
-              ${formatPrice(getPriceAtY(mousePos.y))}
-            </text>
+              {/* Price badge on right axis */}
+              <rect
+                x={dimensions.width - padding.right + 2}
+                y={mousePos.y - 9}
+                width={68}
+                height={18}
+                rx={3}
+                fill="#27272a"
+                stroke="#52525b"
+              />
+              <text
+                x={dimensions.width - padding.right + 6}
+                y={mousePos.y + 3}
+                fill="#f4f4f5"
+                fontSize={10}
+                fontFamily="monospace"
+                fontWeight="bold"
+              >
+                ${formatPrice(getPriceAtY(mousePos.y))}
+              </text>
 
-            {/* Time badge at bottom axis */}
-            {hoveredSlot !== null && hoveredSlot >= 0 && hoveredSlot < candles.length && (
-              <g>
-                <rect
-                  x={Math.max(36, Math.min(dimensions.width - padding.right - 36, getX(hoveredSlot))) - 36}
-                  y={dimensions.height - padding.bottom + 2}
-                  width={72}
-                  height={18}
-                  rx={3}
-                  fill="#27272a"
-                  stroke="#52525b"
-                />
-                <text
-                  x={Math.max(36, Math.min(dimensions.width - padding.right - 36, getX(hoveredSlot)))}
-                  y={dimensions.height - padding.bottom + 14}
-                  fill="#f4f4f5"
-                  fontSize={9}
-                  fontFamily="monospace"
-                  textAnchor="middle"
-                  fontWeight="bold"
-                >
-                  {formatAxisTime(candles[hoveredSlot].timestamp)}
-                </text>
-              </g>
-            )}
-          </g>
-        )}
+              {/* Time badge at bottom axis */}
+              {hoveredCandleIdx >= 0 && hoveredCandleIdx < candles.length && (
+                <g>
+                  <rect
+                    x={
+                      Math.max(
+                        36,
+                        Math.min(dimensions.width - padding.right - 36, getCandleX(hoveredCandleIdx))
+                      ) - 36
+                    }
+                    y={dimensions.height - padding.bottom + 2}
+                    width={72}
+                    height={18}
+                    rx={3}
+                    fill="#27272a"
+                    stroke="#52525b"
+                  />
+                  <text
+                    x={Math.max(
+                      36,
+                      Math.min(dimensions.width - padding.right - 36, getCandleX(hoveredCandleIdx))
+                    )}
+                    y={dimensions.height - padding.bottom + 14}
+                    fill="#f4f4f5"
+                    fontSize={9}
+                    fontFamily="monospace"
+                    textAnchor="middle"
+                    fontWeight="bold"
+                  >
+                    {formatAxisTime(candles[hoveredCandleIdx].timestamp)}
+                  </text>
+                </g>
+              )}
+            </g>
+          )}
       </svg>
     </div>
   );

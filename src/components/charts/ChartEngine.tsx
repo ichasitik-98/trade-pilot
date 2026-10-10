@@ -74,7 +74,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
     preferences.visiblePanels
   );
   const [showCrosshair, setShowCrosshair] = useState<boolean>(preferences.showCrosshair);
-  const [zoomCount, setZoomCount] = useState<number>(preferences.zoomCount || 60);
+  const [zoomCount, setZoomCount] = useState<number>(preferences.zoomCount || 55);
 
   // Full Chart Mode state (supports both controlled and internal state)
   const [internalFullscreen, setInternalFullscreen] = useState<boolean>(false);
@@ -140,8 +140,8 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
     return adaptCandlesForChart(candles, chartType);
   }, [candles, chartType]);
 
-  const maxHistoryPan = Math.max(0, adaptedCandles.length - 12);
-  const minFuturePan = -Math.floor(zoomCount * 0.45);
+  const maxHistoryPan = Math.max(25, adaptedCandles.length - 5 + Math.floor(zoomCount * 0.4));
+  const minFuturePan = -Math.floor(zoomCount * 0.65);
 
   const clampPan = useCallback(
     (val: number) => {
@@ -150,29 +150,42 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
     [minFuturePan, maxHistoryPan]
   );
 
-  // Compute visible slice [startIdx, endIdx) and right-hand future projection slots
-  const { visibleCandles, startIdx, endIdx, rightMarginBars } = useMemo(() => {
+  // Compute visible slice [startIdx, endIdx) and exact slot offsets (MT5 / TradingView 1:1 bar slot system)
+  const { visibleCandles, startIdx, endIdx, leftSlotOffset, rightMarginBars, totalSlots } = useMemo(() => {
     const total = adaptedCandles.length;
+    const slots = Math.max(12, zoomCount);
     if (total === 0) {
-      return { visibleCandles: [], startIdx: 0, endIdx: 0, rightMarginBars: 0 };
+      return {
+        visibleCandles: [],
+        startIdx: 0,
+        endIdx: 0,
+        leftSlotOffset: 0,
+        rightMarginBars: 0,
+        totalSlots: slots,
+      };
     }
 
-    const baseShiftBars = chartShift ? Math.max(5, Math.min(16, Math.round(zoomCount * 0.15))) : 0;
-    const effectiveShiftBars =
-      panOffset <= 0
-        ? baseShiftBars + Math.abs(Math.round(panOffset))
-        : Math.max(0, baseShiftBars - Math.round(panOffset));
+    const baseShiftBars = chartShift ? Math.max(5, Math.min(16, Math.round(slots * 0.16))) : 0;
+    // The candle index corresponding to the rightmost slot (slots - 1) of the viewport
+    const viewportEndCandleIdx = total - 1 + baseShiftBars - Math.round(panOffset);
+    // The candle index corresponding to the leftmost slot (0) of the viewport
+    const viewportStartCandleIdx = viewportEndCandleIdx - slots + 1;
 
-    const historyOffset = Math.max(0, Math.round(panOffset) - baseShiftBars);
-    const computedEnd = Math.max(10, Math.min(total, total - historyOffset));
-    const candleSlots = Math.max(10, zoomCount - effectiveShiftBars);
-    const computedStart = Math.max(0, computedEnd - candleSlots);
+    const sliceStart = Math.max(0, Math.min(total, viewportStartCandleIdx));
+    const sliceEnd = Math.max(0, Math.min(total, viewportEndCandleIdx + 1));
+
+    // Where visibleCandles[0] sits on the [0 .. slots - 1] screen grid
+    const computedLeftOffset = Math.max(0, sliceStart - viewportStartCandleIdx);
+    // How many empty future slots exist to the right of the latest candle (total - 1)
+    const computedRightMargin = Math.max(0, viewportEndCandleIdx - (total - 1));
 
     return {
-      visibleCandles: adaptedCandles.slice(computedStart, computedEnd),
-      startIdx: computedStart,
-      endIdx: computedEnd,
-      rightMarginBars: effectiveShiftBars,
+      visibleCandles: adaptedCandles.slice(sliceStart, sliceEnd),
+      startIdx: sliceStart,
+      endIdx: sliceEnd,
+      leftSlotOffset: computedLeftOffset,
+      rightMarginBars: computedRightMargin,
+      totalSlots: slots,
     };
   }, [adaptedCandles, zoomCount, panOffset, chartShift]);
 
@@ -189,7 +202,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
         const stepSize = Math.max(4, Math.round(prevZoom * 0.14));
         const nextZoom = Math.max(
           16,
-          Math.min(Math.max(220, adaptedCandles.length), prevZoom + deltaStep * stepSize)
+          Math.min(Math.max(220, adaptedCandles.length + 30), prevZoom + deltaStep * stepSize)
         );
         const zoomDiff = nextZoom - prevZoom;
         if (zoomDiff !== 0 && panOffset > 0) {
@@ -221,7 +234,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
   const handleZoomOut = useCallback(() => handleZoomByDelta(1, 0.8), [handleZoomByDelta]);
 
   const handleResetZoom = useCallback(() => {
-    setZoomCount(Math.min(65, adaptedCandles.length || 65));
+    setZoomCount(Math.min(60, Math.max(35, adaptedCandles.length || 55)));
     setPanOffset(0);
   }, [adaptedCandles.length]);
 
@@ -263,7 +276,15 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [isFullscreen, setFullscreen, handleToggleFullscreen, handlePanByBars, handleZoomIn, handleZoomOut, handleJumpToLatest]);
+  }, [
+    isFullscreen,
+    setFullscreen,
+    handleToggleFullscreen,
+    handlePanByBars,
+    handleZoomIn,
+    handleZoomOut,
+    handleJumpToLatest,
+  ]);
 
   // Interactive Overview Range Scrubber (Mini Timeline Navigator)
   const updatePanFromScrubberClientX = useCallback(
@@ -271,7 +292,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
       if (!scrubberRef.current || adaptedCandles.length === 0) return;
       const rect = scrubberRef.current.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
-      // ratio = 1 means latest candle (panOffset = 0), ratio = 0 means oldest candle (panOffset = maxHistoryPan)
+      // ratio = 1 means latest candle (panOffset = 0), ratio = 0 means oldest candle
       const targetEndIdx = Math.round(ratio * adaptedCandles.length);
       const newHistoryOffset = Math.max(0, adaptedCandles.length - targetEndIdx);
       setPanOffset(clampPan(newHistoryOffset));
@@ -476,9 +497,9 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
           onToggleCrosshair={() => setShowCrosshair((prev) => !prev)}
           chartShift={chartShift}
           onToggleChartShift={() => setChartShift((prev) => !prev)}
-          isPannedBack={panOffset > 0}
-          onPanLeft={() => handlePanByBars(12)}
-          onPanRight={() => handlePanByBars(-12)}
+          isPannedBack={panOffset !== 0}
+          onPanLeft={() => handlePanByBars(10)}
+          onPanRight={() => handlePanByBars(-10)}
           onJumpToLatest={handleJumpToLatest}
           onZoomIn={handleZoomIn}
           onZoomOut={handleZoomOut}
@@ -504,11 +525,13 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
               {symbol} &bull; {timeframe} &bull; {chartType}
             </span>
             <span className="text-[11px] font-mono text-zinc-400 tabular-nums">
-              (Bar #{startIdx + 1}–#{endIdx} dari {adaptedCandles.length} candle)
+              (Bar #{Math.min(adaptedCandles.length, startIdx + 1)}–#{endIdx} dari {adaptedCandles.length} candle)
             </span>
-            {panOffset > 0 && (
+            {panOffset !== 0 && (
               <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-mono font-bold">
-                MODE HISTORIS (-{Math.round(panOffset)} BAR)
+                {panOffset > 0
+                  ? `HISTORIS (-${Math.round(panOffset)} BAR)`
+                  : `PROYEKSI KANAN (+${Math.abs(Math.round(panOffset))} BAR)`}
               </span>
             )}
             {visibleCandles.length > 0 && (
@@ -556,6 +579,8 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
         <ChartRenderer
           candles={visibleCandles}
           totalCandlesCount={adaptedCandles.length}
+          totalSlots={totalSlots}
+          leftSlotOffset={leftSlotOffset}
           panOffset={panOffset}
           rightMarginBars={rightMarginBars}
           chartShift={chartShift}
@@ -578,7 +603,7 @@ export const ChartEngine: React.FC<ChartEngineProps> = ({
         />
 
         {/* TradingView / MT5 Mini Range Scrubber & History Timeline Navigator */}
-        {adaptedCandles.length > 20 && (
+        {adaptedCandles.length > 10 && (
           <div className="space-y-1 pt-0.5 shrink-0">
             <div
               ref={scrubberRef}

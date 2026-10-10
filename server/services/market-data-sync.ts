@@ -518,19 +518,19 @@ export class MarketDataSyncService {
     const shouldSyncFromProvider =
       !isRateLimited &&
       (forceSync ||
-        ((storedCandles.length < 50 || initialFreshness.isStale || barHasRolledOver) &&
+        ((storedCandles.length < Math.min(targetCount, 200) || initialFreshness.isStale || barHasRolledOver) &&
           Date.now() - lastAttempt > cooldownMs));
 
     if (shouldSyncFromProvider) {
       let activePromise = this.inFlightSyncs.get(syncKey);
       if (!activePromise) {
         this.lastAttemptedSyncMs.set(syncKey, Date.now());
-        // Use fast incremental window (60 bars) when >= 150 historical candles already exist in Neon
+        // Use fast incremental window (60 bars) when >= 200 historical candles already exist in Neon
         const gapBars = latestBeforeSync
           ? Math.ceil((Date.now() - latestBeforeSync.timestamp) / durationMs)
           : 500;
         const fetchCount =
-          storedCandles.length >= 150 && gapBars <= 45 ? Math.min(targetCount, 60) : targetCount;
+          storedCandles.length >= Math.min(targetCount, 200) && gapBars <= 45 ? Math.min(targetCount, 60) : targetCount;
 
         activePromise = this.syncMarketData({
           symbol: sym,
