@@ -4,7 +4,6 @@ import path from 'path';
 import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
-  const isHttps = process.env.APP_URL?.startsWith('https');
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   return {
@@ -18,12 +17,7 @@ export default defineConfig(() => {
       port,
       host: true,
       strictPort: false,
-      hmr:
-        process.env.DISABLE_HMR === 'true'
-          ? false
-          : {
-              ...(isHttps ? { clientPort: 443 } : {}),
-            },
+      hmr: false,
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };

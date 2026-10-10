@@ -274,11 +274,19 @@ export interface TimeframeAnalysis {
   indicators: {
     rsi?: number | null;
     macd?: number | null;
+    macdSignal?: number | null;
+    macdHistogram?: number | null;
     adx?: number | null;
+    plusDI?: number | null;
+    minusDI?: number | null;
+    atr?: number | null;
     atrPercent?: number | null;
     ema20?: number | null;
     ema50?: number | null;
     ema200?: number | null;
+    bbUpper?: number | null;
+    bbMiddle?: number | null;
+    bbLower?: number | null;
   };
   lastUpdated: string;
   dataQuality: number;
@@ -357,13 +365,35 @@ export interface SignalComponent {
   isPositive: boolean;
 }
 
+export interface BottomUpTimeframeStep {
+  stepOrder: number;
+  timeframe: string;
+  roleLabel: string;
+  trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  structure: string;
+  momentum: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  rsi?: number | null;
+  adx?: number | null;
+  ema20?: number | null;
+  ema50?: number | null;
+  isAligned: boolean;
+  summary: string;
+}
+
 export interface OpenPositionRiskRewardPlan {
   pair: string;
   timeframe: string;
   direction: TradeDirection;
   recommendedAction: 'OPEN_LONG' | 'OPEN_SHORT' | 'WAIT_CONFIRMATION' | 'NO_TRADE';
   actionLabel: string;
-  executionType: 'MARKET' | 'LIMIT';
+  executionType: 'MARKET' | 'LIMIT' | 'BUY_LIMIT' | 'SELL_LIMIT' | 'BUY_STOP' | 'SELL_STOP';
+  orderTypeLabel?: string;
+  currentReferencePrice?: number;
+  entryDistancePips?: number;
+  entryBasisMethod?: string;
+  entryBasisReason?: string;
+  entryZoneLow?: number;
+  entryZoneHigh?: number;
   entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
@@ -409,6 +439,14 @@ export interface SignalRun {
   volatilityScore: number;
   rrScore: number;
   confirmationScore: number;
+  currentReferencePrice?: number;
+  entryDistancePips?: number;
+  executionType?: 'MARKET' | 'LIMIT' | 'BUY_LIMIT' | 'SELL_LIMIT' | 'BUY_STOP' | 'SELL_STOP';
+  orderTypeLabel?: string;
+  entryBasisMethod?: string;
+  entryBasisReason?: string;
+  entryZoneLow?: number;
+  entryZoneHigh?: number;
   entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
@@ -423,6 +461,12 @@ export interface SignalRun {
   tp3Pips?: number;
   recommendedAction?: 'OPEN_LONG' | 'OPEN_SHORT' | 'WAIT_CONFIRMATION' | 'NO_TRADE';
   actionLabel?: string;
+  isPotential?: boolean;
+  potentialVerdict?: 'SANGAT POTENSIAL' | 'POTENSIAL' | 'KURANG POTENSIAL' | 'TIDAK POTENSIAL';
+  potentialSummary?: string;
+  potentialReasons?: string[];
+  nonPotentialReasons?: string[];
+  bottomUpTimeframeSteps?: BottomUpTimeframeStep[];
   positionPlan?: OpenPositionRiskRewardPlan;
   status: SignalStatus;
   explanation: string;

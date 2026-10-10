@@ -171,13 +171,35 @@ export interface MarketAnalysis {
   lastUpdated: string;
 }
 
+export interface BottomUpTimeframeStep {
+  stepOrder: number;
+  timeframe: string;
+  roleLabel: string;
+  trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  structure: string;
+  momentum: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  rsi?: number | null;
+  adx?: number | null;
+  ema20?: number | null;
+  ema50?: number | null;
+  isAligned: boolean;
+  summary: string;
+}
+
 export interface OpenPositionRiskRewardPlan {
   pair: string;
   timeframe: string;
   direction: TradeDirection;
   recommendedAction: 'OPEN_LONG' | 'OPEN_SHORT' | 'WAIT_CONFIRMATION' | 'NO_TRADE';
   actionLabel: string;
-  executionType: 'MARKET' | 'LIMIT';
+  executionType: 'MARKET' | 'LIMIT' | 'BUY_LIMIT' | 'SELL_LIMIT' | 'BUY_STOP' | 'SELL_STOP';
+  orderTypeLabel?: string;
+  currentReferencePrice?: number;
+  entryDistancePips?: number;
+  entryBasisMethod?: string;
+  entryBasisReason?: string;
+  entryZoneLow?: number;
+  entryZoneHigh?: number;
   entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
@@ -222,6 +244,13 @@ export interface ScannerItem {
   status?: SignalStatus;
   recommendedAction?: 'OPEN_LONG' | 'OPEN_SHORT' | 'WAIT_CONFIRMATION' | 'NO_TRADE';
   actionLabel?: string;
+  executionType?: 'MARKET' | 'LIMIT' | 'BUY_LIMIT' | 'SELL_LIMIT' | 'BUY_STOP' | 'SELL_STOP';
+  orderTypeLabel?: string;
+  entryDistancePips?: number;
+  entryBasisMethod?: string;
+  entryBasisReason?: string;
+  entryZoneLow?: number;
+  entryZoneHigh?: number;
   entryPrice?: number;
   stopLoss?: number;
   takeProfit1?: number;
@@ -232,6 +261,12 @@ export interface ScannerItem {
   tp2Pips?: number;
   riskReward?: number;
   riskReward2?: number;
+  isPotential?: boolean;
+  potentialVerdict?: 'SANGAT POTENSIAL' | 'POTENSIAL' | 'KURANG POTENSIAL' | 'TIDAK POTENSIAL';
+  potentialSummary?: string;
+  potentialReasons?: string[];
+  nonPotentialReasons?: string[];
+  bottomUpTimeframeSteps?: BottomUpTimeframeStep[];
   rsi?: number | null;
   adx?: number | null;
   lastStructureEvent?: string;

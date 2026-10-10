@@ -674,7 +674,7 @@ export class MarketDataSyncService {
       }
     }
 
-    const tfs: Timeframe[] = ['D1', 'H4', 'H1', 'M15'];
+    const tfs: Timeframe[] = ['D1', 'H4', 'H1', 'M15', 'M5'];
     const timeframeCandles: Partial<Record<Timeframe, Candle[]>> = {};
 
     const tfResults = await Promise.all(

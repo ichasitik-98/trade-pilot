@@ -10,19 +10,19 @@
 import { ChartPreferences, SupportedChartType } from './types.ts';
 import { validateChartType } from './adapter.ts';
 
-const STORAGE_KEY = 'tradepilot_chart_preferences_v1';
+const STORAGE_KEY = 'tradepilot_chart_preferences_v2';
 
 export const DEFAULT_PREFERENCES: ChartPreferences = {
   chartType: 'CANDLESTICK',
-  timeframe: 'H1',
+  timeframe: 'M15',
   visibleIndicators: {
     ema20: true,
     ema50: true,
-    ema200: false,
+    ema200: true,
     sma20: false,
     sma50: false,
     sma200: false,
-    bollingerBands: false,
+    bollingerBands: true,
     support: true,
     resistance: true,
     signalOverlay: true,
@@ -30,11 +30,11 @@ export const DEFAULT_PREFERENCES: ChartPreferences = {
   visiblePanels: {
     rsi: true,
     macd: true,
-    adx: false,
+    adx: true,
     volume: true,
   },
   showCrosshair: true,
-  zoomCount: 50,
+  zoomCount: 60,
 };
 
 export function loadChartPreferences(): ChartPreferences {

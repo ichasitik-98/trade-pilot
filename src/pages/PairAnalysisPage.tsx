@@ -15,6 +15,7 @@ import {
   ArrowRight,
   Clock,
   CheckCircle,
+  Expand,
 } from 'lucide-react';
 import { MarketDataStatusCode, TradingAccount } from '../types.ts';
 
@@ -82,6 +83,7 @@ export function PairAnalysisPage({
 }: PairAnalysisPageProps) {
   const [selectedPair, setSelectedPair] = useState(initialPair);
   const [timeframe, setTimeframe] = useState('H1');
+  const [isChartFullscreen, setIsChartFullscreen] = useState(false);
   const [data, setData] = useState<any | null>(() => {
     return pairAnalysisCache.get(`${initialPair}:H1`)?.data ?? null;
   });
@@ -339,7 +341,7 @@ export function PairAnalysisPage({
         {/* Timeframe selector & Refresh */}
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-xl border border-zinc-800 text-xs font-mono">
-            {['M15', 'H1', 'H4', 'D1'].map((tf) => (
+            {['M5', 'M15', 'H1', 'H4', 'D1'].map((tf) => (
               <button
                 key={tf}
                 onClick={() => setTimeframe(tf)}
@@ -360,6 +362,16 @@ export function PairAnalysisPage({
           >
             <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-emerald-400' : ''}`} />
             <span>Sync</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsChartFullscreen(true)}
+            title="Buka Mode Full Chart Layar Penuh seperti MetaTrader 5 / TradingView (Anti-Geser UI)"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-mono text-xs font-extrabold shadow-md shadow-emerald-500/15 transition cursor-pointer"
+          >
+            <Expand className="w-3.5 h-3.5" />
+            <span>Full Chart</span>
           </button>
         </div>
       </div>
@@ -504,6 +516,8 @@ export function PairAnalysisPage({
           <ChartEngine
             candles={data?.candles || []}
             symbol={selectedPair}
+            onSymbolChange={setSelectedPair}
+            availableSymbols={POPULAR_PAIRS}
             timeframe={timeframe}
             onTimeframeChange={setTimeframe}
             supportLevel={data?.support?.price}
@@ -521,6 +535,7 @@ export function PairAnalysisPage({
                     riskReward2: signal.riskReward2,
                     score: signal.score,
                     status: signal.status,
+                    isPotentialSignal: signal.isPotentialSignal,
                   }
                 : null
             }
@@ -528,6 +543,8 @@ export function PairAnalysisPage({
             dataQuality={data?.dataQuality}
             isRefreshing={isRefreshing}
             onRefresh={handleManualRefresh}
+            isFullscreen={isChartFullscreen}
+            onFullscreenChange={setIsChartFullscreen}
           />
 
           {/* Open Position Trading Signal & Risk/Reward Execution Panel */}
@@ -542,6 +559,8 @@ export function PairAnalysisPage({
             atr={data?.indicator?.atr14}
             supportLevel={data?.support?.price}
             resistanceLevel={data?.resistance?.price}
+            indicator={data?.indicator}
+            multiTimeframe={data?.multiTimeframe}
             signal={signal}
             activeAccount={activeAccount}
             onSignalUpdated={(updatedSig) => {
@@ -571,84 +590,149 @@ export function PairAnalysisPage({
             onTradeExecuted={onTradeExecuted}
           />
 
-          {/* Technical Indicators Deep-Dive Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-1.5 font-mono text-xs">
-              <span className="text-[10px] uppercase text-zinc-500">RSI (14) Momentum</span>
-              <div className="text-base font-bold text-zinc-100">
-                {hasRealData && data?.indicator?.rsi14 !== null && data?.indicator?.rsi14 !== undefined
-                  ? data?.indicator?.rsi14?.toFixed(2)
-                  : 'INSUFFICIENT_REAL_DATA'}
+          {/* Backtest #1 Winning Indicator Suite Deep-Dive Grid */}
+          <div className="p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800/80 space-y-3.5 shadow-xl">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-zinc-100">
+                  Indikator &amp; Analisis Win Rate Tertinggi (Model Backtest #1: Adaptive Bottom-Up Hybrid • 60%–64% WR)
+                </h3>
               </div>
-              <div className="text-[11px] text-zinc-400">
-                {hasRealData && data?.indicator?.rsi14 !== null && data?.indicator?.rsi14 !== undefined
-                  ? data?.indicator?.rsi14 > 70
-                    ? 'Overbought zone (>70)'
-                    : data?.indicator?.rsi14 < 30
-                    ? 'Oversold zone (<30)'
-                    : 'Equilibrium momentum zone'
-                  : 'Requires real candle history'}
-              </div>
+              <span className="px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-mono font-bold text-emerald-400">
+                AKTIF DI SISTEM &bull; LIMIT RETEST 0.12x–0.32x ATR &bull; SL 1.5x–2.0x ATR
+              </span>
             </div>
 
-            <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-1.5 font-mono text-xs">
-              <span className="text-[10px] uppercase text-zinc-500">MACD (12, 26, 9)</span>
-              <div className="text-base font-bold text-zinc-100">
-                {hasRealData && data?.indicator?.macdHistogram !== null && data?.indicator?.macdHistogram !== undefined
-                  ? data?.indicator?.macdHistogram?.toFixed(5)
-                  : 'INSUFFICIENT_REAL_DATA'}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5 font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase text-zinc-400 font-bold">1. RSI (14) Anti-Exhaustion</span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                      (data?.indicator?.rsi14 ?? 50) >= 32 && (data?.indicator?.rsi14 ?? 50) <= 68
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : 'bg-amber-500/15 text-amber-400'
+                    }`}
+                  >
+                    {(data?.indicator?.rsi14 ?? 50) >= 32 && (data?.indicator?.rsi14 ?? 50) <= 68
+                      ? 'ZONA AMAN (32–68)'
+                      : 'RAWAN JENUH'}
+                  </span>
+                </div>
+                <div className="text-base font-bold text-zinc-100 tabular-nums">
+                  {hasRealData && data?.indicator?.rsi14 !== null && data?.indicator?.rsi14 !== undefined
+                    ? data?.indicator?.rsi14?.toFixed(2)
+                    : 'INSUFFICIENT_REAL_DATA'}
+                </div>
+                <div className="text-[11px] text-zinc-400 font-sans">
+                  {hasRealData && data?.indicator?.rsi14 !== null && data?.indicator?.rsi14 !== undefined
+                    ? data?.indicator?.rsi14 > 70
+                      ? 'Overbought (>70): Filter Backtest melarang Buy di pucuk'
+                      : data?.indicator?.rsi14 < 30
+                      ? 'Oversold (<30): Filter Backtest melarang Sell di dasar'
+                      : data?.indicator?.rsi14 <= 39
+                      ? 'Zona Diskon M15 (≤39): Potensi pantulan Buy Limit (64% WR)'
+                      : data?.indicator?.rsi14 >= 61
+                      ? 'Zona Premium M15 (≥61): Potensi pantulan Sell Limit (64% WR)'
+                      : 'Zona ekspansi sehat (32–68) untuk kelanjutan tren'
+                    : 'Requires real candle history'}
+                </div>
               </div>
-              <div className="text-[11px] text-zinc-400">
-                {hasRealData && data?.indicator?.macd !== null
-                  ? `Line: ${data?.indicator?.macd?.toFixed(5) ?? '0'} | Sig: ${data?.indicator?.macdSignal?.toFixed(5) ?? '0'}`
-                  : 'Requires real candle history'}
-              </div>
-            </div>
 
-            <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-1.5 font-mono text-xs">
-              <span className="text-[10px] uppercase text-zinc-500">ADX (14) Trend Strength</span>
-              <div className="text-base font-bold text-zinc-100">
-                {hasRealData && data?.indicator?.adx14 !== null && data?.indicator?.adx14 !== undefined
-                  ? data?.indicator?.adx14?.toFixed(1)
-                  : 'INSUFFICIENT_REAL_DATA'}
+              <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5 font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase text-zinc-400 font-bold">2. MACD (12, 26, 9) Infleksi</span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                      (data?.indicator?.macdHistogram ?? 0) >= 0
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : 'bg-rose-500/15 text-rose-400'
+                    }`}
+                  >
+                    {(data?.indicator?.macdHistogram ?? 0) >= 0 ? 'HIST BULLISH' : 'HIST BEARISH'}
+                  </span>
+                </div>
+                <div className="text-base font-bold text-zinc-100 tabular-nums">
+                  {hasRealData && data?.indicator?.macdHistogram !== null && data?.indicator?.macdHistogram !== undefined
+                    ? data?.indicator?.macdHistogram?.toFixed(5)
+                    : 'INSUFFICIENT_REAL_DATA'}
+                </div>
+                <div className="text-[11px] text-zinc-400 font-sans">
+                  {hasRealData && data?.indicator?.macd !== null
+                    ? `Line: ${data?.indicator?.macd?.toFixed(4) ?? '0'} | Signal: ${data?.indicator?.macdSignal?.toFixed(4) ?? '0'} (Konfirmasi balik arah / momentum)`
+                    : 'Requires real candle history'}
+                </div>
               </div>
-              <div className="text-[11px] text-zinc-400">
-                {hasRealData && data?.indicator?.plusDI !== null
-                  ? `+DI: ${data?.indicator?.plusDI?.toFixed(1) ?? '-'} | -DI: ${data?.indicator?.minusDI?.toFixed(1) ?? '-'}`
-                  : 'Requires real candle history'}
-              </div>
-            </div>
 
-            <div className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-1.5 font-mono text-xs">
-              <span className="text-[10px] uppercase text-zinc-500">Bollinger Bands (20, 2)</span>
-              <div className="text-base font-bold text-zinc-100">
-                {hasRealData && data?.indicator?.bbWidth !== null && data?.indicator?.bbWidth !== undefined
-                  ? `${((data?.indicator?.bbWidth ?? 0) * 100).toFixed(2)}% Width`
-                  : 'INSUFFICIENT_REAL_DATA'}
+              <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5 font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase text-zinc-400 font-bold">3. ADX (14) &amp; DI+/DI- Rezim</span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                      (data?.indicator?.adx14 ?? 0) >= 25
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : 'bg-sky-500/15 text-sky-400'
+                    }`}
+                  >
+                    {(data?.indicator?.adx14 ?? 0) >= 25 ? 'TREND KUAT (≥25)' : 'ROTASI VALUE (<25)'}
+                  </span>
+                </div>
+                <div className="text-base font-bold text-zinc-100 tabular-nums">
+                  {hasRealData && data?.indicator?.adx14 !== null && data?.indicator?.adx14 !== undefined
+                    ? `${data?.indicator?.adx14?.toFixed(1)} ADX`
+                    : 'INSUFFICIENT_REAL_DATA'}
+                </div>
+                <div className="text-[11px] text-zinc-400 font-sans">
+                  {hasRealData && data?.indicator?.plusDI !== null
+                    ? `+DI: ${data?.indicator?.plusDI?.toFixed(1) ?? '-'} | -DI: ${data?.indicator?.minusDI?.toFixed(1) ?? '-'} (${(data?.indicator?.adx14 ?? 0) >= 25 ? 'Mode Pullback EMA20/50' : 'Mode Pantulan Bollinger/S&R'})`
+                    : 'Requires real candle history'}
+                </div>
               </div>
-              <div className="text-[11px] text-zinc-400">
-                {hasRealData && data?.indicator?.bbUpper !== null
-                  ? `Upper: ${data?.indicator?.bbUpper?.toFixed(4) ?? '-'} | Lower: ${data?.indicator?.bbLower?.toFixed(4) ?? '-'}`
-                  : 'Requires real candle history'}
+
+              <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 space-y-1.5 font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase text-zinc-400 font-bold">4. Bollinger (20,2) &amp; EMA50</span>
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400">
+                    64% M15 WR
+                  </span>
+                </div>
+                <div className="text-base font-bold text-zinc-100 tabular-nums">
+                  {hasRealData && data?.indicator?.ema50 !== null && data?.indicator?.ema50 !== undefined
+                    ? `EMA50: $${data?.indicator?.ema50?.toFixed(selectedPair.includes('JPY') || selectedPair === 'XAUUSD' ? 2 : 4)}`
+                    : 'INSUFFICIENT_REAL_DATA'}
+                </div>
+                <div className="text-[11px] text-zinc-400 font-sans">
+                  {hasRealData && data?.indicator?.bbUpper !== null
+                    ? `BB Lower: $${data?.indicator?.bbLower?.toFixed(selectedPair.includes('JPY') || selectedPair === 'XAUUSD' ? 2 : 4) ?? '-'} | Upper: $${data?.indicator?.bbUpper?.toFixed(selectedPair.includes('JPY') || selectedPair === 'XAUUSD' ? 2 : 4) ?? '-'}`
+                    : 'Requires real candle history'}
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Multi-Timeframe Alignment Table */}
+          {/* Multi-Timeframe Alignment Table (Bottom-Up from Smallest Timeframe M5/M15 -> H1 -> H4 -> D1) */}
           {data?.multiTimeframe && (
             <div className="p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800/80 space-y-3 shadow-xl">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-sm font-bold text-zinc-200">Multi-Timeframe Trend & Structure Alignment</h3>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-emerald-400" />
+                  <h3 className="text-sm font-bold text-zinc-200">
+                    Multi-Timeframe Trend &amp; Structure Alignment (Mulai dari Timeframe Terkecil: {data.multiTimeframe.M5?.dataQuality ? 'M5 → M15 → H1 → H4 → D1' : 'M15 → H1 → H4 → D1'})
+                  </h3>
+                </div>
+                <span className="text-[11px] font-mono text-sky-400">Urutan Analisis: Adaptive Bottom-Up Hybrid</span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {['D1', 'H4', 'H1', 'M15'].map((tf) => {
+              <div className={`grid grid-cols-2 ${data.multiTimeframe.M5?.dataQuality ? 'sm:grid-cols-5' : 'sm:grid-cols-4'} gap-3`}>
+                {(data.multiTimeframe.M5?.dataQuality ? ['M5', 'M15', 'H1', 'H4', 'D1'] : ['M15', 'H1', 'H4', 'D1']).map((tf, idx) => {
                   const tfData = data.multiTimeframe[tf];
                   return (
                     <div key={tf} className="p-3.5 rounded-xl bg-zinc-950 border border-zinc-800/70 space-y-1.5 font-mono text-xs">
                       <div className="flex items-center justify-between">
-                        <span className="font-extrabold text-zinc-300">{tf}</span>
+                        <span className="font-extrabold text-zinc-300">
+                          {idx + 1}. {tf} {idx === 0 ? '(TF Terkecil)' : ''}
+                        </span>
                         <span
                           className={`font-bold ${
                             tfData?.trend === 'BULLISH'

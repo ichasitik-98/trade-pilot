@@ -55,19 +55,12 @@ async function startServer() {
     const http = await import('http');
     httpServer = http.createServer(app);
 
-    // Vite Dev Server middleware with attached HTTP server for HMR
+    // Vite Dev Server middleware with HMR disabled for preview stability
     const { createServer: createViteServer } = await import('vite');
-    const isHttps = process.env.APP_URL?.startsWith('https');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr:
-          process.env.DISABLE_HMR === 'true'
-            ? false
-            : {
-                server: httpServer,
-                ...(isHttps ? { clientPort: 443 } : {}),
-              },
+        hmr: false,
       },
       appType: 'spa',
     });

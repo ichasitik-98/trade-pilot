@@ -10,11 +10,14 @@ import {
   RefreshCw,
   ArrowUpRight,
   ArrowDownRight,
-  Sliders,
   Play,
   FileSpreadsheet,
+  Layers,
+  ThumbsUp,
+  ThumbsDown,
+  ArrowRight,
 } from 'lucide-react';
-import { TradingAccount, TradeDirection } from '../types.ts';
+import { TradingAccount, TradeDirection, BottomUpTimeframeStep } from '../types.ts';
 import { api } from '../services/api.ts';
 
 interface OpenPositionSignalPanelProps {
@@ -25,6 +28,8 @@ interface OpenPositionSignalPanelProps {
   atr?: number | null;
   supportLevel?: number | null;
   resistanceLevel?: number | null;
+  indicator?: any | null;
+  multiTimeframe?: Record<string, any> | null;
   signal: any | null;
   activeAccount: TradingAccount | null;
   onSignalUpdated: (updatedSignal: any) => void;
@@ -78,6 +83,8 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
   atr,
   supportLevel,
   resistanceLevel,
+  indicator,
+  multiTimeframe,
   signal,
   activeAccount,
   onSignalUpdated,
@@ -90,6 +97,133 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
     [atr, currentPrice]
   );
 
+  // Helper to compute Technical Retest Entry from Smallest Timeframe (M15/H1) — NEVER raw currentPrice
+  const computeTechnicalEntryFromLtf = (
+    dir: TradeDirection,
+    preset: 'BACKTEST_OPTIMAL' | 'SCALP' | 'STANDARD' | 'SWING' | 'STRUCTURE'
+  ): { entryPrice: number; methodLabel: string } => {
+    const minOffset =
+      preset === 'BACKTEST_OPTIMAL'
+        ? Math.max(spec.pipSize * 2, effectiveAtr * 0.12)
+        : Math.max(spec.pipSize * 3, effectiveAtr * 0.28);
+    const maxOffset = effectiveAtr * 1.35;
+
+    const m15Ema20 = multiTimeframe?.M15?.indicators?.ema20 ?? indicator?.ema20 ?? null;
+    const m15Ema50 = multiTimeframe?.M15?.indicators?.ema50 ?? indicator?.ema50 ?? null;
+    const m15BbLower = multiTimeframe?.M15?.indicators?.bbLower ?? indicator?.bbLower ?? null;
+    const m15BbUpper = multiTimeframe?.M15?.indicators?.bbUpper ?? indicator?.bbUpper ?? null;
+
+    if (dir === 'LONG') {
+      if (preset === 'BACKTEST_OPTIMAL') {
+        if (
+          m15BbLower &&
+          m15BbLower < currentPrice - minOffset * 0.5 &&
+          currentPrice - m15BbLower <= maxOffset
+        ) {
+          return {
+            entryPrice: Number((m15BbLower + effectiveAtr * 0.08).toFixed(spec.precision)),
+            methodLabel: 'Buy Limit pada Bollinger Lower Band (20,2) + Zona Diskon M15 (Backtest 64% WR)',
+          };
+        }
+        return {
+          entryPrice: Number((currentPrice - Math.max(minOffset, effectiveAtr * 0.12)).toFixed(spec.precision)),
+          methodLabel: 'Buy Limit Retest 0.12x ATR (Model Backtest #1 Adaptive Hybrid • 60% WR)',
+        };
+      }
+      if (
+        preset === 'STRUCTURE' &&
+        supportLevel &&
+        supportLevel < currentPrice - minOffset * 0.5 &&
+        currentPrice - supportLevel <= effectiveAtr * 1.8
+      ) {
+        return {
+          entryPrice: Number((supportLevel + effectiveAtr * 0.15).toFixed(spec.precision)),
+          methodLabel: 'Buy Limit pada Retest Support Struktur + Buffer ATR',
+        };
+      }
+      if (
+        m15Ema20 &&
+        m15Ema20 < currentPrice - minOffset * 0.5 &&
+        currentPrice - m15Ema20 <= maxOffset
+      ) {
+        return {
+          entryPrice: Number(Number(m15Ema20).toFixed(spec.precision)),
+          methodLabel: 'Buy Limit pada Pullback Dynamic EMA20 Timeframe Kecil (M15)',
+        };
+      }
+      if (
+        m15Ema50 &&
+        m15Ema50 < currentPrice - minOffset * 0.5 &&
+        currentPrice - m15Ema50 <= maxOffset
+      ) {
+        return {
+          entryPrice: Number(Number(m15Ema50).toFixed(spec.precision)),
+          methodLabel: 'Buy Limit pada Pullback Dynamic EMA50 Timeframe Kecil (M15)',
+        };
+      }
+      const mult = preset === 'SCALP' ? 0.32 : preset === 'SWING' ? 0.55 : 0.42;
+      const fallbackEntry = currentPrice - Math.max(minOffset, effectiveAtr * mult);
+      return {
+        entryPrice: Number(fallbackEntry.toFixed(spec.precision)),
+        methodLabel: `Buy Limit pada Zona Diskon Pullback (${mult}x ATR di bawah harga terkini)`,
+      };
+    } else {
+      if (preset === 'BACKTEST_OPTIMAL') {
+        if (
+          m15BbUpper &&
+          m15BbUpper > currentPrice + minOffset * 0.5 &&
+          m15BbUpper - currentPrice <= maxOffset
+        ) {
+          return {
+            entryPrice: Number((m15BbUpper - effectiveAtr * 0.08).toFixed(spec.precision)),
+            methodLabel: 'Sell Limit pada Bollinger Upper Band (20,2) + Zona Premium M15 (Backtest 64% WR)',
+          };
+        }
+        return {
+          entryPrice: Number((currentPrice + Math.max(minOffset, effectiveAtr * 0.12)).toFixed(spec.precision)),
+          methodLabel: 'Sell Limit Retest 0.12x ATR (Model Backtest #1 Adaptive Hybrid • 60% WR)',
+        };
+      }
+      if (
+        preset === 'STRUCTURE' &&
+        resistanceLevel &&
+        resistanceLevel > currentPrice + minOffset * 0.5 &&
+        resistanceLevel - currentPrice <= effectiveAtr * 1.8
+      ) {
+        return {
+          entryPrice: Number((resistanceLevel - effectiveAtr * 0.15).toFixed(spec.precision)),
+          methodLabel: 'Sell Limit pada Retest Resistance Struktur - Buffer ATR',
+        };
+      }
+      if (
+        m15Ema20 &&
+        m15Ema20 > currentPrice + minOffset * 0.5 &&
+        m15Ema20 - currentPrice <= maxOffset
+      ) {
+        return {
+          entryPrice: Number(Number(m15Ema20).toFixed(spec.precision)),
+          methodLabel: 'Sell Limit pada Rally Dynamic EMA20 Timeframe Kecil (M15)',
+        };
+      }
+      if (
+        m15Ema50 &&
+        m15Ema50 > currentPrice + minOffset * 0.5 &&
+        m15Ema50 - currentPrice <= maxOffset
+      ) {
+        return {
+          entryPrice: Number(Number(m15Ema50).toFixed(spec.precision)),
+          methodLabel: 'Sell Limit pada Rally Dynamic EMA50 Timeframe Kecil (M15)',
+        };
+      }
+      const mult = preset === 'SCALP' ? 0.32 : preset === 'SWING' ? 0.55 : 0.42;
+      const fallbackEntry = currentPrice + Math.max(minOffset, effectiveAtr * mult);
+      return {
+        entryPrice: Number(fallbackEntry.toFixed(spec.precision)),
+        methodLabel: `Sell Limit pada Zona Premium Rally (${mult}x ATR di atas harga terkini)`,
+      };
+    }
+  };
+
   const [direction, setDirection] = useState<TradeDirection>('LONG');
   const [entryInput, setEntryInput] = useState<string>('');
   const [slInput, setSlInput] = useState<string>('');
@@ -98,7 +232,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
   const [tp3Input, setTp3Input] = useState<string>('');
   const [riskPercent, setRiskPercent] = useState<string>('1.0');
   const [selectedTpTarget, setSelectedTpTarget] = useState<'TP1' | 'TP2' | 'TP3'>('TP1');
-  const [activePreset, setActivePreset] = useState<'SCALP' | 'STANDARD' | 'SWING' | 'STRUCTURE'>('STANDARD');
+  const [activePreset, setActivePreset] = useState<'BACKTEST_OPTIMAL' | 'SCALP' | 'STANDARD' | 'SWING' | 'STRUCTURE'>('BACKTEST_OPTIMAL');
   const [evaluating, setEvaluating] = useState(false);
   const [executingTrade, setExecutingTrade] = useState(false);
   const [executedSuccess, setExecutedSuccess] = useState<string | null>(null);
@@ -110,7 +244,12 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
     const dir: TradeDirection = signal.direction === 'SHORT' ? 'SHORT' : 'LONG';
     setDirection(dir);
 
-    const ep = Number(signal.entryPrice || currentPrice || 0);
+    let ep = Number(signal.entryPrice || 0);
+    // Ensure Entry Price is never identical to raw currentPrice
+    if (ep <= 0 || Math.abs(ep - currentPrice) < spec.pipSize * 0.5) {
+      ep = computeTechnicalEntryFromLtf(dir, 'STANDARD').entryPrice;
+    }
+
     const sl = Number(signal.stopLoss || 0);
     const tp1 = Number(signal.takeProfit1 || 0);
     const slDist = Math.abs(ep - sl) || effectiveAtr * 1.5;
@@ -140,7 +279,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
     spec.precision,
   ]);
 
-  const numericEntry = parseFloat(entryInput) || currentPrice || 0;
+  const numericEntry = parseFloat(entryInput) || 0;
   const numericSl = parseFloat(slInput) || 0;
   const numericTp1 = parseFloat(tp1Input) || 0;
   const numericTp2 = parseFloat(tp2Input) || 0;
@@ -154,12 +293,15 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
     const tp1Dist = Math.abs(numericTp1 - numericEntry);
     const tp2Dist = Math.abs(numericTp2 - numericEntry);
     const tp3Dist = Math.abs(numericTp3 - numericEntry);
+    const entryOffsetFromCurrent = Math.abs(numericEntry - currentPrice);
 
     const geometryValid =
       direction === 'LONG'
         ? numericSl > 0 && numericSl < numericEntry && numericTp1 > numericEntry
         : numericSl > numericEntry && numericTp1 > 0 && numericTp1 < numericEntry;
 
+    const entryDistancePips =
+      spec.pipSize > 0 ? Number((entryOffsetFromCurrent / spec.pipSize).toFixed(1)) : 0;
     const slPips = spec.pipSize > 0 ? Number((slDist / spec.pipSize).toFixed(1)) : 0;
     const tp1Pips = spec.pipSize > 0 ? Number((tp1Dist / spec.pipSize).toFixed(1)) : 0;
     const tp2Pips = spec.pipSize > 0 ? Number((tp2Dist / spec.pipSize).toFixed(1)) : 0;
@@ -179,6 +321,20 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
     const breakevenWinRate1 = rr1 > 0 ? Number(((1 / (1 + rr1)) * 100).toFixed(1)) : 100;
     const breakevenWinRate2 = rr2 > 0 ? Number(((1 / (1 + rr2)) * 100).toFixed(1)) : 100;
 
+    // Determine Pending Order Type relative to currentPrice
+    let orderTypeBadge = direction === 'LONG' ? 'BUY LIMIT (Retest Pullback)' : 'SELL LIMIT (Retest Supply)';
+    if (direction === 'LONG') {
+      orderTypeBadge =
+        numericEntry < currentPrice
+          ? 'BUY LIMIT (Retest Pullback TF Kecil)'
+          : 'BUY STOP (Breakout Struktur TF Kecil)';
+    } else {
+      orderTypeBadge =
+        numericEntry > currentPrice
+          ? 'SELL LIMIT (Retest Supply TF Kecil)'
+          : 'SELL STOP (Breakdown Struktur TF Kecil)';
+    }
+
     // Position sizing math
     const targetRiskAmount = Number(((accountBalance * numericRiskPct) / 100).toFixed(2));
     const riskPerFullLot = slDist * spec.contractSize;
@@ -196,6 +352,8 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
 
     return {
       geometryValid,
+      entryDistancePips,
+      orderTypeBadge,
       slDist,
       tp1Dist,
       tp2Dist,
@@ -227,6 +385,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
     numericTp1,
     numericTp2,
     numericTp3,
+    currentPrice,
     direction,
     spec,
     effectiveAtr,
@@ -236,18 +395,26 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
 
   const applyPresetLevels = async (
     newDir: TradeDirection,
-    preset: 'SCALP' | 'STANDARD' | 'SWING' | 'STRUCTURE'
+    preset: 'BACKTEST_OPTIMAL' | 'SCALP' | 'STANDARD' | 'SWING' | 'STRUCTURE'
   ) => {
     setDirection(newDir);
     setActivePreset(preset);
-    const ep = Number((currentPrice || numericEntry).toFixed(spec.precision));
 
-    let slDist = effectiveAtr * 1.5;
-    let mult1 = 2.0;
-    let mult2 = 3.0;
-    let mult3 = 4.5;
+    // Compute Entry from Smallest Timeframe structure/EMA — NEVER raw currentPrice
+    const { entryPrice: ep } = computeTechnicalEntryFromLtf(newDir, preset);
 
-    if (preset === 'SCALP') {
+    let slDist = effectiveAtr * 2.0;
+    let mult1 = 1.5;
+    let mult2 = 2.5;
+    let mult3 = 3.5;
+
+    if (preset === 'BACKTEST_OPTIMAL') {
+      // Exact Backtest #1 Winner: 2.0x ATR Stop Loss, TP1 1.5R (60-64% WR), TP2 2.5R, TP3 3.5R
+      slDist = effectiveAtr * 2.0;
+      mult1 = 1.5;
+      mult2 = 2.5;
+      mult3 = 3.5;
+    } else if (preset === 'SCALP') {
       slDist = effectiveAtr * 1.0;
       mult1 = 1.5;
       mult2 = 2.5;
@@ -264,9 +431,9 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
       mult3 = 5.5;
     } else if (preset === 'STRUCTURE') {
       if (newDir === 'LONG' && supportLevel && supportLevel < ep) {
-        slDist = Math.max(effectiveAtr * 0.6, ep - supportLevel + effectiveAtr * 0.2);
+        slDist = Math.max(effectiveAtr * 0.7, ep - supportLevel + effectiveAtr * 0.25);
       } else if (newDir === 'SHORT' && resistanceLevel && resistanceLevel > ep) {
-        slDist = Math.max(effectiveAtr * 0.6, resistanceLevel - ep + effectiveAtr * 0.2);
+        slDist = Math.max(effectiveAtr * 0.7, resistanceLevel - ep + effectiveAtr * 0.25);
       } else {
         slDist = effectiveAtr * 1.5;
       }
@@ -287,7 +454,6 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
     setTp2Input(tp2.toFixed(spec.precision));
     setTp3Input(tp3.toFixed(spec.precision));
 
-    // Immediately update parent chart overlay and re-evaluate signal score
     await triggerSignalEvaluation(newDir, ep, sl, tp1, tp2, tp3);
   };
 
@@ -379,15 +545,15 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
         lotSize: rrMetrics.lotSize,
         riskPercent: numericRiskPct,
         fees: 0,
-        setup: `Signal ${direction} (${activePreset} • 1:${activeTpRr}R)`,
-        entryReason: signal?.explanation || `${direction} Open Position Signal (${timeframe})`,
+        setup: `Signal ${direction} (${rrMetrics.orderTypeBadge} • 1:${activeTpRr}R)`,
+        entryReason: signal?.potentialSummary || signal?.explanation || `${direction} Bottom-Up Signal (${timeframe})`,
         psychology: ['Disciplined'],
         mistakeTags: [],
-        notes: `Executed from Open Position Signal Panel | Score: ${signal?.score ?? 0}/100 | SL: $${numericSl.toFixed(spec.precision)} (-${rrMetrics.slPips} pips) | ${selectedTpTarget}: $${activeTpPrice.toFixed(spec.precision)} (${activeTpRr}R)`,
+        notes: `Executed from Bottom-Up Signal Panel (M15→H1→H4→D1) | Verdict: ${signal?.potentialVerdict ?? 'POTENSIAL'} (${signal?.score ?? 0}/100) | Entry: $${numericEntry.toFixed(spec.precision)} (Spot: $${currentPrice.toFixed(spec.precision)}) | SL: $${numericSl.toFixed(spec.precision)} (-${rrMetrics.slPips} pips) | ${selectedTpTarget}: $${activeTpPrice.toFixed(spec.precision)} (${activeTpRr}R)`,
       });
 
       setExecutedSuccess(
-        `OPEN ${direction} position for ${symbol} (${rrMetrics.lotSize} Lots @ $${numericEntry.toFixed(spec.precision)}, SL: $${numericSl.toFixed(spec.precision)}, ${selectedTpTarget}: $${activeTpPrice.toFixed(spec.precision)}) recorded in ${activeAccount.name}.`
+        `Posisi ${direction} (${rrMetrics.orderTypeBadge}) untuk ${symbol} (${rrMetrics.lotSize} Lot @ Entry Teknikal $${numericEntry.toFixed(spec.precision)}, SL: $${numericSl.toFixed(spec.precision)}, ${selectedTpTarget}: $${activeTpPrice.toFixed(spec.precision)}) berhasil dicatat ke ${activeAccount.name}.`
       );
       onTradeExecuted?.();
     } catch (err: any) {
@@ -404,8 +570,20 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
   const isLong = direction === 'LONG';
   const score = signal?.score ?? 0;
   const status = signal?.status ?? 'WATCH';
-  const isActionable =
-    status === 'VERY_STRONG_SETUP' || status === 'STRONG_SETUP' || status === 'VALID_SETUP';
+  const potentialVerdict: string =
+    signal?.potentialVerdict ||
+    (score >= 80
+      ? 'SANGAT POTENSIAL'
+      : score >= 65
+      ? 'POTENSIAL'
+      : score >= 50
+      ? 'KURANG POTENSIAL'
+      : 'TIDAK POTENSIAL');
+  const isPotential = signal?.isPotential ?? (score >= 65 && status !== 'BLOCKED');
+
+  const bottomUpSteps: BottomUpTimeframeStep[] = signal?.bottomUpTimeframeSteps || [];
+  const potentialReasons: string[] = signal?.potentialReasons || [];
+  const nonPotentialReasons: string[] = signal?.nonPotentialReasons || [];
 
   // Proportional bar percentages for visual Risk vs Reward representation
   const totalSpanR = 1 + Math.max(1, rrMetrics.rr2 || rrMetrics.rr1 || 2);
@@ -413,57 +591,55 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
   const rewardBarWidthPct = 100 - riskBarWidthPct;
 
   return (
-    <div className="p-5 rounded-2xl bg-zinc-900/90 border border-zinc-800/90 shadow-xl space-y-5">
-      {/* Top Signal Banner: Direction, Action Callout, Confluence Score & Strategy Presets */}
+    <div className="p-5 rounded-2xl bg-zinc-900/90 border border-zinc-800/90 shadow-xl space-y-6">
+      {/* Top Signal Banner: Direction, Potentiality Verdict, Confluence Score & Strategy Presets */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-zinc-800">
-        <div className="flex flex-wrap items-center gap-3">
-          <div
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl font-mono text-sm font-black tracking-tight border ${
-              isLong
-                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                : 'bg-rose-500/15 text-rose-400 border-rose-500/30'
-            }`}
-          >
-            {isLong ? (
-              <ArrowUpRight className="w-4 h-4 shrink-0" />
-            ) : (
-              <ArrowDownRight className="w-4 h-4 shrink-0" />
-            )}
-            <span>SIGNAL: OPEN {isLong ? 'BUY / LONG' : 'SELL / SHORT'}</span>
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl font-mono text-xs sm:text-sm font-black tracking-tight border ${
+                isLong
+                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                  : 'bg-rose-500/15 text-rose-400 border-rose-500/30'
+              }`}
+            >
+              {isLong ? (
+                <ArrowUpRight className="w-4 h-4 shrink-0" />
+              ) : (
+                <ArrowDownRight className="w-4 h-4 shrink-0" />
+              )}
+              <span>SIGNAL: {rrMetrics.orderTypeBadge.split(' ')[0]} {rrMetrics.orderTypeBadge.split(' ')[1]} ({isLong ? 'LONG' : 'SHORT'})</span>
+            </div>
+
+            <span
+              className={`px-3 py-1 rounded-lg font-mono text-xs font-black border ${
+                potentialVerdict === 'SANGAT POTENSIAL' || potentialVerdict === 'POTENSIAL'
+                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                  : potentialVerdict === 'KURANG POTENSIAL'
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                  : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+              }`}
+            >
+              {potentialVerdict} &bull; {score}/100
+            </span>
+
+            <span className="px-2.5 py-1 rounded-lg bg-sky-500/10 border border-sky-500/25 text-sky-300 font-mono text-[11px] font-semibold">
+              Model Backtest #1: Adaptive Hybrid ({bottomUpSteps.map((s) => s.timeframe).join(' → ') || 'M15 → H1 → H4 → D1'} &bull; 60%–64% WR)
+            </span>
           </div>
 
-          <div>
-            <div className="flex items-center gap-2 text-xs font-mono">
-              <span className="font-bold text-zinc-100">
-                {symbol} &middot; {timeframe}
-              </span>
-              <span className="text-zinc-600">&middot;</span>
-              <span
-                className={`font-semibold ${
-                  isActionable
-                    ? 'text-emerald-400'
-                    : status === 'BLOCKED'
-                    ? 'text-rose-400'
-                    : 'text-amber-400'
-                }`}
-              >
-                {status.replace(/_/g, ' ')}
-              </span>
-              <span className="text-zinc-600">&middot;</span>
-              <span className="text-zinc-300 font-bold tabular-nums">
-                Score: {score}/100
-              </span>
-            </div>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              {signal?.explanation ||
-                'Real-time algorithmic open position setup with dynamic ATR & structural Risk/Reward levels.'}
-            </p>
-          </div>
+          <p className="text-xs text-zinc-300 leading-relaxed">
+            {signal?.entryBasisReason ||
+              `Signal diproses menggunakan Model Backtest #1 (Adaptive Bottom-Up Hybrid Confluence: EMA 20/50/200 + Bollinger 20,2 + RSI Anti-Exhaustion 32–68 + MACD + ADX/DI). Harga Entry ($${numericEntry.toFixed(
+                spec.precision
+              )}) ditentukan dari area limit retest struktur & zona nilai timeframe kecil, BUKAN dari harga pasar terkini ($${currentPrice.toFixed(
+                spec.precision
+              )}).`}
+          </p>
         </div>
 
         {/* Direction Switcher & R:R Preset Selector */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Direction Segmented Control */}
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <div className="flex items-center p-1 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono">
             <button
               type="button"
@@ -475,7 +651,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
               }`}
             >
               <TrendingUp className="w-3.5 h-3.5" />
-              <span>LONG (BUY)</span>
+              <span>LONG (BUY LIMIT)</span>
             </button>
             <button
               type="button"
@@ -487,18 +663,18 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
               }`}
             >
               <TrendingDown className="w-3.5 h-3.5" />
-              <span>SHORT (SELL)</span>
+              <span>SHORT (SELL LIMIT)</span>
             </button>
           </div>
 
-          {/* R:R Profile Presets */}
           <div className="flex items-center p-1 rounded-xl bg-zinc-950 border border-zinc-800 text-[11px] font-mono">
             {(
               [
+                { id: 'BACKTEST_OPTIMAL', label: 'Backtest #1 (60% WR)' },
                 { id: 'SCALP', label: 'Scalp 1:1.5R' },
                 { id: 'STANDARD', label: 'Standard 1:2R' },
                 { id: 'SWING', label: 'Swing 1:2.5R' },
-                { id: 'STRUCTURE', label: 'S/R Level' },
+                { id: 'STRUCTURE', label: 'S/R Retest' },
               ] as const
             ).map((p) => (
               <button
@@ -518,7 +694,128 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
         </div>
       </div>
 
-      {/* Main Grid: Left = Open Position Price Ladder (Entry, SL, TP1, TP2, TP3) | Right = Risk & Reward Position Calculator */}
+      {/* SECTION 1: Bottom-Up Multi-Timeframe Cascade (Mulai dari Timeframe Terkecil M5/M15 -> H1 -> H4 -> D1) */}
+      {bottomUpSteps.length > 0 && (
+        <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800/90 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-sky-400" />
+              <h4 className="text-xs sm:text-sm font-bold text-zinc-100">
+                Alur Analisis Adaptive Bottom-Up Hybrid ({bottomUpSteps.map((s) => s.timeframe).join(' → ')})
+              </h4>
+            </div>
+            <span className="text-[11px] font-mono text-zinc-400">
+              {bottomUpSteps.filter((s) => s.isAligned).length} dari {bottomUpSteps.length} Timeframe Searah ({direction})
+            </span>
+          </div>
+
+          <div
+            className={`grid grid-cols-1 sm:grid-cols-2 ${
+              bottomUpSteps.length >= 5 ? 'lg:grid-cols-5' : 'lg:grid-cols-4'
+            } gap-3`}
+          >
+            {bottomUpSteps.map((step, idx) => (
+              <div
+                key={step.timeframe}
+                className={`p-3 rounded-xl border space-y-1.5 font-mono text-xs relative ${
+                  step.isAligned
+                    ? 'bg-emerald-950/20 border-emerald-500/30'
+                    : 'bg-zinc-900/70 border-amber-500/25'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-1">
+                  <span className="font-black text-zinc-100 flex items-center gap-1.5">
+                    <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] text-sky-400">
+                      #{step.stepOrder}
+                    </span>
+                    {step.timeframe}
+                    {idx === 0 && (
+                      <span className="text-[10px] font-normal text-sky-400">(TF Terkecil)</span>
+                    )}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                      step.isAligned
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : 'bg-amber-500/15 text-amber-400'
+                    }`}
+                  >
+                    {step.isAligned ? 'SEARAH' : 'DIVERGEN'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-0.5">
+                  <span>Tren: <strong className={step.trend === 'BULLISH' ? 'text-emerald-400' : step.trend === 'BEARISH' ? 'text-rose-400' : 'text-zinc-300'}>{step.trend}</strong></span>
+                  <span>Mom: <strong className="text-zinc-200">{step.momentum}</strong></span>
+                </div>
+
+                <p className="text-[11px] text-zinc-400 font-sans leading-relaxed pt-1 border-t border-zinc-800/80">
+                  {step.summary}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* SECTION 2: Keterangan Alasan Kenapa Signal POTENSIAL vs TIDAK POTENSIAL */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Left Box: Alasan Kenapa Signal Ini POTENSIAL */}
+        <div className="p-4 rounded-xl bg-emerald-950/15 border border-emerald-500/30 space-y-3">
+          <div className="flex items-center justify-between border-b border-emerald-500/20 pb-2.5">
+            <div className="flex items-center gap-2">
+              <ThumbsUp className="w-4 h-4 text-emerald-400 shrink-0" />
+              <h4 className="text-xs sm:text-sm font-bold text-emerald-300">
+                Alasan Kenapa Signal Ini POTENSIAL ({potentialReasons.length} Faktor Pendukung)
+              </h4>
+            </div>
+            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300">
+              PRO / KONFLUENSI
+            </span>
+          </div>
+
+          {potentialReasons.length === 0 ? (
+            <p className="text-xs text-zinc-400 italic">
+              Belum ada faktor konfluensi kuat yang mendukung setup ini pada kondisi pasar saat ini.
+            </p>
+          ) : (
+            <ul className="space-y-2 text-xs text-zinc-200 leading-relaxed">
+              {potentialReasons.map((reason, i) => (
+                <li key={i} className="flex items-start gap-2">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                  <span>{reason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Right Box: Alasan Kenapa Signal Ini TIDAK POTENSIAL / Faktor Risiko & Kelemahan */}
+        <div className="p-4 rounded-xl bg-rose-950/15 border border-rose-500/30 space-y-3">
+          <div className="flex items-center justify-between border-b border-rose-500/20 pb-2.5">
+            <div className="flex items-center gap-2">
+              <ThumbsDown className="w-4 h-4 text-rose-400 shrink-0" />
+              <h4 className="text-xs sm:text-sm font-bold text-rose-300">
+                Alasan Kenapa Signal Ini TIDAK POTENSIAL / Risiko Kelemahan ({nonPotentialReasons.length} Faktor)
+              </h4>
+            </div>
+            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-rose-500/15 text-rose-300">
+              KONTRA / RISIKO
+            </span>
+          </div>
+
+          <ul className="space-y-2 text-xs text-zinc-200 leading-relaxed">
+            {nonPotentialReasons.map((reason, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-0.5" />
+                <span>{reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      {/* SECTION 3: Main Grid: Left = Open Position Price Ladder (Entry, SL, TP1, TP2, TP3) | Right = Risk & Reward Position Calculator */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Left 7 Columns: Entry, Stop Loss, and Multi-Stage Take Profit Ladder */}
         <div className="lg:col-span-7 space-y-4">
@@ -526,7 +823,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
             <div className="flex items-center gap-2">
               <Target className="w-4 h-4 text-emerald-400" />
               <h4 className="text-sm font-bold text-zinc-100">
-                Open Position Levels (Entry, Stop Loss &amp; Take Profit Targets)
+                Level Open Posisi Teknikal (Bukan Harga Terkini) &amp; Target R:R
               </h4>
             </div>
             <button
@@ -542,20 +839,25 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
 
           {/* Price Ladder Table / Rows */}
           <div className="space-y-2.5 font-mono text-xs">
-            {/* ENTRY PRICE ROW */}
-            <div className="p-3.5 rounded-xl bg-zinc-950 border border-sky-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-sky-400 font-bold">ENTRY PRICE ({isLong ? 'BUY' : 'SELL'})</span>
-                  <span className="text-zinc-500">&middot;</span>
-                  <span className="text-[11px] text-zinc-400">
-                    {Math.abs(numericEntry - currentPrice) < spec.pipSize * 2
-                      ? 'Market Execution'
-                      : 'Pending Limit / Stop'}
+            {/* ENTRY PRICE ROW (Technical Retest Entry vs Spot Price Comparison) */}
+            <div className="p-3.5 rounded-xl bg-zinc-950 border border-sky-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sky-400 font-bold">
+                    HARGA ENTRY SIGNAL ({rrMetrics.orderTypeBadge})
                   </span>
                 </div>
-                <div className="text-[11px] text-zinc-500">
-                  Live Market: ${currentPrice.toFixed(spec.precision)} &middot; ATR(14): {effectiveAtr.toFixed(spec.precision)}
+                <div className="text-[11px] text-zinc-400 flex flex-wrap items-center gap-2">
+                  <span>
+                    Harga Terkini (Spot): <strong className="text-zinc-200">${currentPrice.toFixed(spec.precision)}</strong>
+                  </span>
+                  <span>&middot;</span>
+                  <span className="text-sky-300">
+                    Jarak Retest: {rrMetrics.entryDistancePips} pips dari harga terkini
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-500">
+                  Basis TF Kecil: {signal?.entryBasisMethod || 'Pullback Dynamic EMA20/50 & Struktur M15'}
                 </div>
               </div>
 
@@ -571,14 +873,11 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
                 />
                 <button
                   type="button"
-                  onClick={() => {
-                    const liveStr = currentPrice.toFixed(spec.precision);
-                    setEntryInput(liveStr);
-                    triggerSignalEvaluation(direction, currentPrice, numericSl, numericTp1, numericTp2, numericTp3);
-                  }}
-                  className="px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-[11px] text-zinc-300 cursor-pointer whitespace-nowrap"
+                  onClick={() => applyPresetLevels(direction, activePreset)}
+                  title="Hitung ulang harga Entry teknikal dari struktur timeframe terkecil (bukan harga terkini)"
+                  className="px-2.5 py-1.5 rounded-lg bg-sky-500/15 border border-sky-500/30 hover:bg-sky-500/25 text-[11px] text-sky-300 font-semibold cursor-pointer whitespace-nowrap"
                 >
-                  Use Live
+                  Reset Retest TF
                 </button>
               </div>
             </div>
@@ -594,7 +893,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
                   </span>
                 </div>
                 <div className="text-[11px] text-zinc-400 tabular-nums">
-                  ATR Buffer: {rrMetrics.atrMult}x ATR &middot; Capital Risk: -${rrMetrics.actualDollarRisk.toFixed(2)} ({numericRiskPct}%)
+                  ATR Buffer: {rrMetrics.atrMult}x ATR &middot; Risiko Modal: -${rrMetrics.actualDollarRisk.toFixed(2)} ({numericRiskPct}%)
                 </div>
               </div>
 
@@ -631,7 +930,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
                   </span>
                 </div>
                 <div className="text-[11px] text-zinc-400 tabular-nums">
-                  Projected Reward: +${rrMetrics.profitTp1.toFixed(2)} &middot; Breakeven Win Rate: {rrMetrics.breakevenWinRate1}%
+                  Estimasi Reward: +${rrMetrics.profitTp1.toFixed(2)} &middot; Breakeven Win Rate: {rrMetrics.breakevenWinRate1}%
                 </div>
               </div>
 
@@ -676,7 +975,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
                   </span>
                 </div>
                 <div className="text-[11px] text-zinc-400 tabular-nums">
-                  Projected Reward: +${rrMetrics.profitTp2.toFixed(2)} &middot; Breakeven Win Rate: {rrMetrics.breakevenWinRate2}%
+                  Estimasi Reward: +${rrMetrics.profitTp2.toFixed(2)} &middot; Breakeven Win Rate: {rrMetrics.breakevenWinRate2}%
                 </div>
               </div>
 
@@ -721,7 +1020,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
                   </span>
                 </div>
                 <div className="text-[11px] text-zinc-400 tabular-nums">
-                  Projected Reward: +${rrMetrics.profitTp3.toFixed(2)} &middot; Extended Trend Target
+                  Estimasi Reward: +${rrMetrics.profitTp3.toFixed(2)} &middot; Extended Trend Target
                 </div>
               </div>
 
@@ -780,10 +1079,10 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
 
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400 pt-0.5">
               <span>
-                Invalidation: {isLong ? 'Close below' : 'Close above'} ${numericSl.toFixed(spec.precision)}
+                Titik Batal (Invalidation): {isLong ? 'Tutup di bawah' : 'Tutup di atas'} ${numericSl.toFixed(spec.precision)}
               </span>
               <span className="tabular-nums">
-                Min Win Rate for Positive Expectancy: <strong className="text-zinc-200">{rrMetrics.breakevenWinRate1}%</strong>
+                Min Win Rate Impas: <strong className="text-zinc-200">{rrMetrics.breakevenWinRate1}%</strong>
               </span>
             </div>
           </div>
@@ -795,7 +1094,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
             <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
               <div className="flex items-center gap-2">
                 <Calculator className="w-4 h-4 text-emerald-400" />
-                <h4 className="text-sm font-bold text-zinc-100">Position Size &amp; Risk/Reward</h4>
+                <h4 className="text-sm font-bold text-zinc-100">Kalkulator Lot &amp; Risk/Reward</h4>
               </div>
               <span className="text-[11px] font-mono text-zinc-400 tabular-nums">
                 Balance: ${accountBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
@@ -805,7 +1104,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
             {/* Risk % Selector */}
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <label className="text-zinc-400 font-medium">Risk Allocation (% of Equity)</label>
+                <label className="text-zinc-400 font-medium">Alokasi Risiko (% dari Ekuitas)</label>
                 <span className="font-mono font-bold text-zinc-200 tabular-nums">
                   {numericRiskPct}% (${rrMetrics.targetRiskAmount.toFixed(2)})
                 </span>
@@ -832,17 +1131,17 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
             {/* Primary Sizing & R:R Readout Grid */}
             <div className="grid grid-cols-2 gap-3 font-mono">
               <div className="p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 space-y-1">
-                <div className="text-[10px] text-zinc-400">Recommended Lot Size</div>
+                <div className="text-[10px] text-zinc-400">Ukuran Lot Rekomendasi</div>
                 <div className="text-xl font-black text-zinc-100 tabular-nums">
                   {rrMetrics.lotSize} <span className="text-xs font-normal text-zinc-400">Lots</span>
                 </div>
                 <div className="text-[10px] text-zinc-500 tabular-nums">
-                  Contract: {spec.contractSize.toLocaleString()} units
+                  Kontrak: {spec.contractSize.toLocaleString()} unit
                 </div>
               </div>
 
               <div className="p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 space-y-1">
-                <div className="text-[10px] text-zinc-400">Risk / Reward Ratio</div>
+                <div className="text-[10px] text-zinc-400">Rasio Risk / Reward</div>
                 <div
                   className={`text-xl font-black tabular-nums ${
                     activeTpRr >= 2.0
@@ -860,7 +1159,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
               </div>
 
               <div className="p-3 rounded-xl bg-zinc-900/90 border border-rose-500/20 space-y-1">
-                <div className="text-[10px] text-zinc-400">Max Risk at SL (-1R)</div>
+                <div className="text-[10px] text-zinc-400">Risiko Maksimal di SL (-1R)</div>
                 <div className="text-base font-bold text-rose-400 tabular-nums">
                   -${rrMetrics.actualDollarRisk.toFixed(2)}
                 </div>
@@ -870,7 +1169,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
               </div>
 
               <div className="p-3 rounded-xl bg-zinc-900/90 border border-emerald-500/20 space-y-1">
-                <div className="text-[10px] text-zinc-400">Net Reward at {selectedTpTarget}</div>
+                <div className="text-[10px] text-zinc-400">Potensi Profit di {selectedTpTarget}</div>
                 <div className="text-base font-bold text-emerald-400 tabular-nums">
                   +${activeTpProfit.toFixed(2)}
                 </div>
@@ -880,12 +1179,29 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
               </div>
             </div>
 
+            {/* Verdict Summary Box */}
+            <div
+              className={`p-3 rounded-xl border text-xs leading-relaxed ${
+                isPotential
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                  : 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+              }`}
+            >
+              <div className="font-bold mb-0.5">
+                Kesimpulan Kelayakan: {potentialVerdict}
+              </div>
+              <div className="text-[11px] opacity-90">
+                {signal?.potentialSummary ||
+                  `Evaluasi bottom-up M15 → H1 → H4 → D1 menghasilkan skor ${score}/100 dengan Entry teknikal di $${numericEntry.toFixed(spec.precision)}.`}
+              </div>
+            </div>
+
             {/* Geometry / Risk Governance Warning if applicable */}
             {!rrMetrics.geometryValid && (
               <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>
-                  Invalid {direction} geometry: Stop Loss must be {isLong ? 'below' : 'above'} Entry Price and Take Profit must be {isLong ? 'above' : 'below'} Entry Price.
+                  Geometri {direction} tidak valid: Stop Loss harus {isLong ? 'di bawah' : 'di atas'} Harga Entry dan Take Profit harus {isLong ? 'di atas' : 'di bawah'} Harga Entry.
                 </span>
               </div>
             )}
@@ -894,7 +1210,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
               <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs flex items-start gap-2">
                 <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>
-                  Risk/Reward warning: Current TP1 ratio ({rrMetrics.rr1}R) is below the 1.0R minimum threshold.
+                  Peringatan Risk/Reward: Rasio TP1 saat ini ({rrMetrics.rr1}R) berada di bawah batas minimum 1.0R.
                 </span>
               </div>
             )}
@@ -917,7 +1233,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
           {/* Action Buttons: Direct Open Position & Pre-fill in Journal */}
           <div className="space-y-2.5 pt-2 border-t border-zinc-800">
             <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400">
-              <span>Active Target for Execution:</span>
+              <span>Target Take Profit Aktif:</span>
               <div className="flex items-center gap-1">
                 {(['TP1', 'TP2', 'TP3'] as const).map((tpKey) => (
                   <button
@@ -950,8 +1266,8 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
                 <Play className="w-3.5 h-3.5 fill-current" />
                 <span>
                   {executingTrade
-                    ? 'Opening...'
-                    : `Open ${direction} Position (${rrMetrics.lotSize} Lot)`}
+                    ? 'Menyimpan...'
+                    : `Open ${direction} (${rrMetrics.lotSize} Lot)`}
                 </span>
               </button>
 
@@ -968,7 +1284,7 @@ export const OpenPositionSignalPanel: React.FC<OpenPositionSignalPanelProps> = (
                     timeframe,
                     lotSize: rrMetrics.lotSize,
                     riskPercent: numericRiskPct,
-                    setup: `Signal ${direction} (${activePreset} • 1:${activeTpRr}R)`,
+                    setup: `Signal ${direction} (${rrMetrics.orderTypeBadge} • 1:${activeTpRr}R)`,
                   })
                 }
                 className="py-2.5 px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-bold text-xs transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"

@@ -85,14 +85,21 @@ export function classifyMomentum(
   momentum: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   explanation: string;
 } {
-  const { rsi14, macdHistogram, adx14, plusDI, minusDI } = indicator;
+  const { rsi14, macdHistogram, adx14, plusDI, minusDI, ema20, ema50, bbLower, bbUpper } = indicator;
 
   let bullishPoints = 0;
   let bearishPoints = 0;
 
   if (rsi14 !== null) {
-    if (rsi14 > 52 && rsi14 < 75) bullishPoints += 1.5;
-    else if (rsi14 < 48 && rsi14 > 25) bearishPoints += 1.5;
+    // Backtest #1 Anti-Exhaustion Trend Zone (32-68)
+    if (rsi14 >= 48 && rsi14 <= 68) bullishPoints += 1.6;
+    else if (rsi14 <= 52 && rsi14 >= 32) bearishPoints += 1.6;
+    // Backtest #1 M15 Value-Zone Inflection (64% WR setup: Discount RSI <= 39 or Premium RSI >= 61)
+    else if (rsi14 <= 39 && (macdHistogram ?? 0) >= -0.5) bullishPoints += 1.8;
+    else if (rsi14 >= 61 && (macdHistogram ?? 0) <= 0.5) bearishPoints += 1.8;
+    // Extreme exhaustion penalty (avoid buying >72 or selling <28)
+    else if (rsi14 > 72 && bbUpper !== null) bearishPoints += 1.2;
+    else if (rsi14 < 28 && bbLower !== null) bullishPoints += 1.2;
   }
 
   if (macdHistogram !== null) {
@@ -101,21 +108,26 @@ export function classifyMomentum(
   }
 
   if (adx14 != null && typeof plusDI === 'number' && typeof minusDI === 'number') {
-    if (plusDI > minusDI) bullishPoints += 1.0;
-    else if (minusDI > plusDI) bearishPoints += 1.0;
+    if (plusDI > minusDI) bullishPoints += adx14 >= 25 ? 1.4 : 1.0;
+    else if (minusDI > plusDI) bearishPoints += adx14 >= 25 ? 1.4 : 1.0;
   }
 
-  if (bullishPoints >= 3.0 && bullishPoints > bearishPoints) {
+  if (ema20 !== null && ema50 !== null) {
+    if (ema20 > ema50) bullishPoints += 0.5;
+    else if (ema20 < ema50) bearishPoints += 0.5;
+  }
+
+  if (bullishPoints >= 2.8 && bullishPoints > bearishPoints) {
     return {
       momentum: 'BULLISH',
-      explanation: `Bullish momentum supported by RSI (${rsi14?.toFixed(1) ?? 'N/A'}) and positive MACD histogram`,
+      explanation: `Bullish momentum supported by RSI (${rsi14?.toFixed(1) ?? 'N/A'}), MACD (${macdHistogram?.toFixed(4) ?? '0'}), and DI+/ADX confluence`,
     };
   }
 
-  if (bearishPoints >= 3.0 && bearishPoints > bullishPoints) {
+  if (bearishPoints >= 2.8 && bearishPoints > bullishPoints) {
     return {
       momentum: 'BEARISH',
-      explanation: `Bearish momentum supported by RSI (${rsi14?.toFixed(1) ?? 'N/A'}) and negative MACD histogram`,
+      explanation: `Bearish momentum supported by RSI (${rsi14?.toFixed(1) ?? 'N/A'}), MACD (${macdHistogram?.toFixed(4) ?? '0'}), and DI-/ADX confluence`,
     };
   }
 
@@ -217,11 +229,19 @@ export class MultiTimeframeAnalysisService {
       indicators: {
         rsi: indicator.rsi14,
         macd: indicator.macd,
+        macdSignal: indicator.macdSignal,
+        macdHistogram: indicator.macdHistogram,
         adx: indicator.adx14,
+        plusDI: indicator.plusDI,
+        minusDI: indicator.minusDI,
+        atr: indicator.atr14,
         atrPercent: indicator.atrPercent,
         ema20: indicator.ema20,
         ema50: indicator.ema50,
         ema200: indicator.ema200,
+        bbUpper: indicator.bbUpper,
+        bbMiddle: indicator.bbMiddle,
+        bbLower: indicator.bbLower,
       },
       lastUpdated: new Date().toISOString(),
       dataQuality: candles.length >= 100 ? 100 : Math.round((candles.length / 100) * 100),
@@ -245,7 +265,11 @@ export class MultiTimeframeAnalysisService {
       dataQuality = 100,
     } = params;
 
-    const tfList: Timeframe[] = ['D1', 'H4', 'H1', 'M15'];
+    // Bottom-Up Timeframe Sequence: Process from smallest timeframe first (M5 -> M15 -> H1 -> H4 -> D1)
+    const hasM5 = Boolean(timeframeCandles.M5 && timeframeCandles.M5.length > 0);
+    const tfList: Timeframe[] = hasM5
+      ? ['M5', 'M15', 'H1', 'H4', 'D1']
+      : ['M15', 'H1', 'H4', 'D1'];
     const mtfMap: Record<string, TimeframeAnalysis> = {};
 
     for (const tf of tfList) {
@@ -254,36 +278,45 @@ export class MultiTimeframeAnalysisService {
     }
 
     // Determine primary timeframe analysis
-    const primaryAnalysis = mtfMap[primaryTimeframe] || mtfMap['H1'];
-    const primaryCandles = timeframeCandles[primaryTimeframe] || timeframeCandles['H1'] || [];
+    const primaryAnalysis = mtfMap[primaryTimeframe] || mtfMap['H1'] || mtfMap['M15'];
+    const primaryCandles =
+      timeframeCandles[primaryTimeframe] ||
+      timeframeCandles['H1'] ||
+      timeframeCandles['M15'] ||
+      [];
     const currentPrice = primaryCandles.length > 0 ? primaryCandles[primaryCandles.length - 1].close : 1.0;
 
-    // Confluence weighting across D1, H4, H1
+    // Adaptive Bottom-Up Hybrid Confluence weighting (M5/M15 trigger -> H1 structure -> H4 swing -> D1 macro)
     let bullishWeight = 0;
     let bearishWeight = 0;
 
-    const weights: Record<string, number> = { D1: 3, H4: 2.5, H1: 2, M15: 1 };
+    const weights: Record<string, number> = { M5: 1.6, M15: 2.2, H1: 2.5, H4: 2.2, D1: 2.0 };
     for (const tf of tfList) {
       const an = mtfMap[tf];
+      if (!an || an.dataQuality === 0) continue;
       const w = weights[tf] || 1;
       if (an.trend === 'BULLISH') bullishWeight += w;
       else if (an.trend === 'BEARISH') bearishWeight += w;
 
-      if (an.momentum === 'BULLISH') bullishWeight += w * 0.5;
-      else if (an.momentum === 'BEARISH') bearishWeight += w * 0.5;
+      if (an.momentum === 'BULLISH') bullishWeight += w * 0.55;
+      else if (an.momentum === 'BEARISH') bearishWeight += w * 0.55;
     }
 
     let overallBias: MarketBias = 'NEUTRAL';
-    if (bullishWeight > bearishWeight + 2) {
+    if (bullishWeight > bearishWeight + 1.5) {
       overallBias = 'BULLISH';
-    } else if (bearishWeight > bullishWeight + 2) {
+    } else if (bearishWeight > bullishWeight + 1.5) {
       overallBias = 'BEARISH';
     }
 
     // Support and Resistance calculation
     const sr = calculateSupportResistance(primaryCandles as any, currentPrice, 3);
 
-    const explanation = `Multi-timeframe analysis: D1 is ${mtfMap.D1?.trend || 'N/A'}, H4 is ${mtfMap.H4?.trend || 'N/A'}, H1 is ${mtfMap.H1?.trend || 'N/A'}, M15 is ${mtfMap.M15?.trend || 'N/A'}. Overall technical bias is ${overallBias}.`;
+    const sequenceLabel = hasM5
+      ? `M5 (${mtfMap.M5?.trend || 'N/A'}) → M15 (${mtfMap.M15?.trend || 'N/A'}) → H1 (${mtfMap.H1?.trend || 'N/A'}) → H4 (${mtfMap.H4?.trend || 'N/A'}) → D1 (${mtfMap.D1?.trend || 'N/A'})`
+      : `M15 (${mtfMap.M15?.trend || 'N/A'}) → H1 (${mtfMap.H1?.trend || 'N/A'}) → H4 (${mtfMap.H4?.trend || 'N/A'}) → D1 (${mtfMap.D1?.trend || 'N/A'})`;
+
+    const explanation = `Adaptive Bottom-Up Hybrid Confluence (${sequenceLabel}). Bias teknikal gabungan: ${overallBias}.`;
 
     return {
       id: crypto.randomUUID(),

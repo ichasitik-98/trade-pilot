@@ -12,11 +12,16 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
+  Minimize2,
+  Expand,
   Crosshair,
   ChevronDown,
   Layers,
   Sparkles,
   RotateCcw,
+  ChevronLeft,
+  ChevronRight,
+  ArrowRightToLine,
 } from 'lucide-react';
 import { SupportedChartType, IndicatorVisibility, IndicatorPanelsVisibility } from './types.ts';
 
@@ -31,9 +36,17 @@ interface ChartToolbarProps {
   onTogglePanel: (key: keyof IndicatorPanelsVisibility) => void;
   showCrosshair: boolean;
   onToggleCrosshair: () => void;
+  chartShift?: boolean;
+  onToggleChartShift?: () => void;
+  isPannedBack?: boolean;
+  onPanLeft?: () => void;
+  onPanRight?: () => void;
+  onJumpToLatest?: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetZoom: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
   isRefreshing?: boolean;
   onRefresh?: () => void;
 }
@@ -65,9 +78,17 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   onTogglePanel,
   showCrosshair,
   onToggleCrosshair,
+  chartShift = true,
+  onToggleChartShift,
+  isPannedBack = false,
+  onPanLeft,
+  onPanRight,
+  onJumpToLatest,
   onZoomIn,
   onZoomOut,
   onResetZoom,
+  isFullscreen = false,
+  onToggleFullscreen,
   isRefreshing,
   onRefresh,
 }) => {
@@ -179,7 +200,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </div>
       </div>
 
-      {/* Right section: Indicators, Panels, Crosshair, and Zoom */}
+      {/* Right section: Indicators, Panels, Crosshair, Pan/Shift, and Zoom */}
       <div className="flex items-center gap-1.5 flex-wrap">
         {/* Indicators Overlay Dropdown */}
         <div className="relative" ref={indicatorsRef}>
@@ -296,6 +317,23 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           )}
         </div>
 
+        {/* MT5 Chart Shift (Right Margin Space) Toggle */}
+        {onToggleChartShift && (
+          <button
+            onClick={onToggleChartShift}
+            title="MT5 Chart Shift: Beri ruang kosong di sebelah kanan candle terakhir untuk area proyeksi Entry & TP/SL"
+            aria-label="Toggle MT5 Chart Shift"
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg bg-zinc-950 border text-[11px] transition cursor-pointer ${
+              chartShift
+                ? 'border-sky-500/40 text-sky-400 font-bold'
+                : 'border-zinc-800 text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <ArrowRightToLine className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">Shift</span>
+          </button>
+        )}
+
         {/* Crosshair Button */}
         <button
           onClick={onToggleCrosshair}
@@ -310,11 +348,42 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           <Crosshair className="w-3.5 h-3.5" />
         </button>
 
-        {/* Zoom Controls */}
+        {/* Pan & Zoom Controls (TradingView / MT5 style) */}
         <div className="flex items-center gap-0.5 bg-zinc-950 p-0.5 rounded-lg border border-zinc-800/80">
+          {onPanLeft && (
+            <button
+              onClick={onPanLeft}
+              title="Geser Grafik ke Kiri (Lihat Candle Historis)"
+              aria-label="Pan chart left to older candles"
+              className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {onPanRight && (
+            <button
+              onClick={onPanRight}
+              title="Geser Grafik ke Kanan (Menuju Candle Terbaru)"
+              aria-label="Pan chart right to newer candles"
+              className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {isPannedBack && onJumpToLatest && (
+            <button
+              onClick={onJumpToLatest}
+              title="Kembali ke Candle Terakhir (Real-Time)"
+              aria-label="Jump to latest candle"
+              className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 text-[10px] font-bold cursor-pointer"
+            >
+              &gt;&gt;
+            </button>
+          )}
+          <div className="h-3.5 w-px bg-zinc-800 mx-0.5" />
           <button
             onClick={onZoomIn}
-            title="Zoom In"
+            title="Zoom In (Scroll Mouse ke Atas)"
             aria-label="Zoom in on chart"
             className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
           >
@@ -322,7 +391,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           </button>
           <button
             onClick={onZoomOut}
-            title="Zoom Out"
+            title="Zoom Out (Scroll Mouse ke Bawah)"
             aria-label="Zoom out on chart"
             className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
           >
@@ -330,7 +399,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           </button>
           <button
             onClick={onResetZoom}
-            title="Reset Zoom / Fit Content"
+            title="Reset Zoom, Skala Harga & Posisi Grafik (Auto-Fit)"
             aria-label="Reset zoom and fit content"
             className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900 cursor-pointer"
           >
@@ -349,6 +418,37 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           >
             <RotateCcw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-emerald-400' : ''}`} />
             <span className="hidden sm:inline text-[11px]">{isRefreshing ? 'Syncing' : 'Refresh'}</span>
+          </button>
+        )}
+
+        {/* Full Chart / Fullscreen Terminal Toggle Button */}
+        {onToggleFullscreen && (
+          <button
+            type="button"
+            onClick={onToggleFullscreen}
+            title={
+              isFullscreen
+                ? 'Keluar Mode Full Chart (Tekan ESC)'
+                : 'Tampilkan Full Chart Layar Penuh seperti MetaTrader 5 / TradingView (Tekan F)'
+            }
+            aria-label={isFullscreen ? 'Exit Full Chart' : 'Enter Full Chart'}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+              isFullscreen
+                ? 'bg-rose-500/15 border-rose-500/40 text-rose-300 hover:bg-rose-500/25'
+                : 'bg-emerald-500 text-zinc-950 border-emerald-400 hover:bg-emerald-400 shadow-sm'
+            }`}
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize2 className="w-3.5 h-3.5" />
+                <span>Tutup Full Chart</span>
+              </>
+            ) : (
+              <>
+                <Expand className="w-3.5 h-3.5" />
+                <span>Full Chart</span>
+              </>
+            )}
           </button>
         )}
       </div>

@@ -56,6 +56,7 @@ export interface ChartSignalOverlay {
   riskReward2?: number;
   score?: number;
   status?: string;
+  isPotentialSignal?: boolean;
 }
 
 export interface IndicatorVisibility {

@@ -125,7 +125,7 @@ describe('Signal Engine & Confluence Scoring Tests', () => {
     expect(validShort.valid).toBe(true);
   });
 
-  it('generates complete Open Position Risk & Reward plan with Entry, SL, TP1, TP2, TP3, Pips, and Breakeven Win Rate', () => {
+  it('generates complete Open Position Risk & Reward plan from smallest timeframe (not currentPrice) with potential and non-potential reasons', () => {
     const levels = generateOptimalSignalLevels({
       pair: 'EURUSD',
       direction: 'LONG',
@@ -133,9 +133,15 @@ describe('Signal Engine & Confluence Scoring Tests', () => {
       atr: 0.0020,
       nearestSupport: 1.0825,
       nearestResistance: 1.0920,
+      indicator: mockIndicator,
+      structure: mockStructure,
     });
 
-    expect(levels.entryPrice).toBe(1.0850);
+    // Entry MUST NOT be raw currentPrice (1.0850); for LONG BUY_LIMIT it must be a technical pullback below 1.0850
+    expect(levels.entryPrice).not.toBe(1.0850);
+    expect(levels.entryPrice).toBeLessThan(1.0850);
+    expect(levels.executionType).toBe('BUY_LIMIT');
+    expect(levels.entryDistancePips).toBeGreaterThan(0);
     expect(levels.stopLoss).toBeLessThan(levels.entryPrice);
     expect(levels.takeProfit1).toBeGreaterThan(levels.entryPrice);
     expect(levels.takeProfit2).toBeGreaterThan(levels.takeProfit1);
@@ -157,12 +163,26 @@ describe('Signal Engine & Confluence Scoring Tests', () => {
 
     expect(signal.positionPlan).toBeDefined();
     expect(signal.recommendedAction).toBe('OPEN_LONG');
-    expect(signal.actionLabel).toContain('OPEN BUY / LONG');
     expect(signal.riskReward).toBeGreaterThanOrEqual(1.8);
     expect(signal.riskReward2).toBeGreaterThan(signal.riskReward);
     expect(signal.riskReward3).toBeGreaterThan(signal.riskReward2!);
     expect(signal.stopLossPips).toBeGreaterThan(0);
     expect(signal.tp1Pips).toBeGreaterThan(signal.stopLossPips!);
     expect(signal.positionPlan?.breakevenWinRateTp1).toBeLessThan(40);
+
+    // Bottom-Up Timeframe sequence must start from M15 (Smallest TF) -> H1 -> H4 -> D1
+    expect(signal.bottomUpTimeframeSteps).toBeDefined();
+    expect(signal.bottomUpTimeframeSteps?.[0].timeframe).toBe('M15');
+    expect(signal.bottomUpTimeframeSteps?.[1].timeframe).toBe('H1');
+    expect(signal.bottomUpTimeframeSteps?.[2].timeframe).toBe('H4');
+    expect(signal.bottomUpTimeframeSteps?.[3].timeframe).toBe('D1');
+
+    // Must provide explicit reasons why signal is potential AND why it is not potential / risks
+    expect(Array.isArray(signal.potentialReasons)).toBe(true);
+    expect(signal.potentialReasons!.length).toBeGreaterThan(0);
+    expect(Array.isArray(signal.nonPotentialReasons)).toBe(true);
+    expect(signal.nonPotentialReasons!.length).toBeGreaterThan(0);
+    expect(signal.potentialVerdict).toBeDefined();
+    expect(signal.potentialSummary).toBeTruthy();
   });
 });

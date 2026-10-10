@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api.ts';
 import { TradingAccount, TradeStatistics } from '../types.ts';
+import { BacktestResultsVisualization } from '../components/BacktestResultsVisualization.tsx';
 import {
   ResponsiveContainer,
   LineChart,
@@ -55,8 +56,13 @@ export function AnalyticsPage({ activeAccount }: AnalyticsPageProps) {
       {/* Title */}
       <div>
         <h2 className="text-xl sm:text-2xl font-extrabold text-zinc-100 tracking-tight">Performance Analytics</h2>
-        <p className="text-xs text-zinc-400">Equity curve trajectory, drawdown dynamics, and setup statistical edges.</p>
+        <p className="text-xs text-zinc-400">
+          Equity curve trajectory, 100-signal XAU/USD M5 &amp; M15 backtest telemetry, and setup statistical edges.
+        </p>
       </div>
+
+      {/* 100-Signal Backtest Visualization (Win Rate Trend Line Chart & Monthly Performance Bar Chart) */}
+      <BacktestResultsVisualization />
 
       {/* Equity Curve Chart Card */}
       <div className="p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800/80 space-y-4">
