@@ -10,6 +10,7 @@ import {
   Sparkles,
   Settings,
   Compass,
+  Bell,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -25,6 +26,7 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'scanner', label: 'Market Scanner', icon: Radar },
     { id: 'pair-analysis', label: 'Pair Terminal', icon: LineChart },
+    { id: 'signal-alerts', label: 'Signal Alerts', icon: Bell, badge: 'WA' },
     { id: 'watchlist', label: 'Watchlist', icon: Eye },
     { id: 'risk-manager', label: 'Risk Manager', icon: Shield },
     { id: 'ai-analyst', label: 'AI Analyst', icon: Sparkles, badge: 'Flash' },

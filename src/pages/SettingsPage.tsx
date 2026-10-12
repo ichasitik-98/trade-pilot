@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api.ts';
 import { User, TradingAccount, AuditLog } from '../types.ts';
-import { Settings, User as UserIcon, Plus, ShieldCheck, History, Check } from 'lucide-react';
+import { Settings, User as UserIcon, Plus, ShieldCheck, History, Check, Bell, ArrowRight } from 'lucide-react';
 
 interface SettingsPageProps {
   user: User;
   accounts: TradingAccount[];
   onRefreshAccounts: () => void;
+  onNavigateToAlerts?: () => void;
 }
 
-export function SettingsPage({ user, accounts, onRefreshAccounts }: SettingsPageProps) {
+export function SettingsPage({ user, accounts, onRefreshAccounts, onNavigateToAlerts }: SettingsPageProps) {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountBroker, setNewAccountBroker] = useState('');
   const [newAccountBalance, setNewAccountBalance] = useState('10000');
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [accountSuccess, setAccountSuccess] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadLogs() {
@@ -35,6 +37,7 @@ export function SettingsPage({ user, accounts, onRefreshAccounts }: SettingsPage
 
     try {
       setCreatingAccount(true);
+      setAccountError(null);
       await api.createAccount({
         name: newAccountName.trim(),
         broker: newAccountBroker.trim() || 'Demo Broker',
@@ -46,7 +49,7 @@ export function SettingsPage({ user, accounts, onRefreshAccounts }: SettingsPage
       onRefreshAccounts();
       setTimeout(() => setAccountSuccess(false), 2000);
     } catch (err: any) {
-      alert(err.message || 'Failed to create trading account');
+      setAccountError(err.message || 'Failed to create trading account');
     } finally {
       setCreatingAccount(false);
     }
@@ -135,6 +138,12 @@ export function SettingsPage({ user, accounts, onRefreshAccounts }: SettingsPage
             </div>
           )}
 
+          {accountError && (
+            <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs">
+              {accountError}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <input
               type="text"
@@ -170,6 +179,48 @@ export function SettingsPage({ user, accounts, onRefreshAccounts }: SettingsPage
             <span>{creatingAccount ? 'Adding...' : 'Create Account'}</span>
           </button>
         </form>
+      </div>
+
+      {/* Dual-Stage Signal Alerts & WhatsApp Cloud API */}
+      <div className="p-5 rounded-2xl bg-zinc-900/80 border border-zinc-800/80 space-y-4 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Bell className="w-5 h-5 text-emerald-400" />
+            <div>
+              <h3 className="text-base font-bold text-zinc-100">
+                Dual-Stage Trading Signal Alerts & WhatsApp Cloud API
+              </h3>
+              <p className="text-xs text-zinc-400">
+                Configure Stage 1 (Initial Signal) and Stage 2 (Higher-Timeframe Confirmation) rules and official Meta WhatsApp Business Cloud API delivery.
+              </p>
+            </div>
+          </div>
+
+          {onNavigateToAlerts && (
+            <button
+              onClick={onNavigateToAlerts}
+              className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0"
+            >
+              <span>Open Signal Alerts Center</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs font-mono">
+          <div>
+            <span className="text-zinc-500 block mb-1">Default Active Pair</span>
+            <span className="text-zinc-200 font-bold">XAUUSD (M15 ➔ H1)</span>
+          </div>
+          <div>
+            <span className="text-zinc-500 block mb-1">Market Data Provider</span>
+            <span className="text-emerald-400 font-bold">Twelve Data (REAL Mode)</span>
+          </div>
+          <div>
+            <span className="text-zinc-500 block mb-1">Notification Channel</span>
+            <span className="text-zinc-200">Meta WhatsApp Cloud API</span>
+          </div>
+        </div>
       </div>
 
       {/* Security Audit Activity Logs */}

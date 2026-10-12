@@ -61,9 +61,12 @@ model User {
   tradeSetups     TradeSetup[]
   watchlists      Watchlist[]
   journalEntries  JournalEntry[]
-  signalRuns      SignalRun[]
-  aiAnalyses      AiAnalysis[]
-  auditLogs       AuditLog[]
+  signalRuns         SignalRun[]
+  aiAnalyses         AiAnalysis[]
+  auditLogs          AuditLog[]
+  signalAlertConfigs SignalAlertConfig[]
+  signalEvents       SignalLifecycleEvent[]
+  notificationJobs   NotificationJob[]
 
   @@index([email])
 }
@@ -447,3 +450,166 @@ model AuditLog {
   @@index([timestamp])
   @@index([action])
 }
+
+model SignalAlertConfig {
+  id                       String                 @id @default(uuid())
+  userId                   String
+  symbol                   String                 @default("XAUUSD")
+  enabled                  Boolean                @default(false)
+  htfDirectionTimeframe    String                 @default("H4")
+  htfConfirmationTimeframe String                 @default("H1")
+  primaryTimeframe         String                 @default("M15")
+  confirmationTimeframe    String                 @default("M5")
+  initialScoreThreshold    Int                    @default(65)
+  confirmationScoreThreshold Int                  @default(65)
+  requireClosedCandle      Boolean                @default(true)
+  requireTrendAlignment    Boolean                @default(true)
+  requireStructureAlignment Boolean               @default(true)
+  requireMomentumAlignment Boolean                @default(false)
+  minAdx                   Decimal                @default(18.00) @db.Decimal(6, 2)
+  expirationMinutes        Int                    @default(240)
+  invalidationPolicy       String                 @default("OPPOSITE_OR_STOP") // OPPOSITE_SIGNAL, PRICE_STOP_BREACH, OPPOSITE_OR_STOP
+  enableInitialAlert       Boolean                @default(true)
+  enableConfirmationAlert  Boolean                @default(true)
+  whatsappEnabled          Boolean                @default(false)
+  whatsappRecipient        String?
+  useTemplateMessage       Boolean                @default(false)
+  initialTemplateName      String?
+  confirmationTemplateName String?
+  templateLanguage         String                 @default("en_US")
+  configVersion            Int                    @default(1)
+  lastVerifiedTestAt       DateTime?
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+  user                     User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signalEvents             SignalLifecycleEvent[]
+
+  @@unique([userId, symbol, primaryTimeframe, confirmationTimeframe])
+  @@index([userId, enabled])
+  @@index([symbol, enabled])
+}
+
+model SignalLifecycleEvent {
+  id                             String                   @id @default(uuid())
+  userId                         String
+  configId                       String?
+  signalRunId                    String?
+  idempotencyKey                 String                   @unique
+  confirmationIdempotencyKey     String?                  @unique
+  symbol                         String
+  direction                      String                   // BUY or SELL
+  htfDirectionTimeframe          String                   @default("H4")
+  htfConfirmationTimeframe       String                   @default("H1")
+  primaryTimeframe               String
+  confirmationTimeframe          String
+  h4Direction                    String?
+  h1Trend                        String?
+  m15PullbackValid               Boolean                  @default(false)
+  m15PullbackReason              String?
+  m5BosDetected                  Boolean                  @default(false)
+  m5CandleConfirmed              Boolean                  @default(false)
+  primaryCandleTimestamp         DateTime
+  isClosedCandle                 Boolean                  @default(true)
+  referencePrice                 Decimal                  @db.Decimal(14, 5)
+  entryPrice                     Decimal                  @db.Decimal(14, 5)
+  stopLoss                       Decimal                  @db.Decimal(14, 5)
+  takeProfit1                    Decimal                  @db.Decimal(14, 5)
+  takeProfit2                    Decimal?                 @db.Decimal(14, 5)
+  riskReward                     Decimal                  @db.Decimal(6, 2)
+  initialScore                   Int
+  initialStatus                  String
+  lifecycleStatus                String                   @default("PENDING_CONFIRMATION") // DETECTED, PENDING_CONFIRMATION, CONFIRMED, EXPIRED, INVALIDATED
+  initialNotificationStatus      String                   @default("NOT_QUEUED") // NOT_QUEUED, NOTIFICATION_PENDING, NOTIFICATION_SENT, NOTIFICATION_FAILED
+  confirmationNotificationStatus String                   @default("NOT_QUEUED") // NOT_QUEUED, NOTIFICATION_PENDING, NOTIFICATION_SENT, NOTIFICATION_FAILED
+  dataFreshnessStatus            String                   @default("CURRENT")
+  initialExplanation             String
+  confirmationScore              Int?
+  confirmationCandleTimestamp    DateTime?
+  confirmedAt                    DateTime?
+  confirmationReason             String?
+  expiredAt                      DateTime?
+  expirationReason               String?
+  invalidatedAt                  DateTime?
+  invalidationReason             String?
+  conflictingDirection           String?
+  expiresAt                      DateTime
+  lastEvaluatedAt                DateTime?
+  evaluationCount                Int                      @default(0)
+  createdAt                      DateTime                 @default(now())
+  updatedAt                      DateTime                 @updatedAt
+  user                           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  config                         SignalAlertConfig?       @relation(fields: [configId], references: [id], onDelete: SetNull)
+  evaluations                    SignalEvaluationRecord[]
+  notificationJobs               NotificationJob[]
+
+  @@index([userId, lifecycleStatus])
+  @@index([symbol, lifecycleStatus])
+  @@index([createdAt])
+}
+
+model SignalEvaluationRecord {
+  id              String               @id @default(uuid())
+  signalEventId   String
+  stage           String               // INITIAL or CONFIRMATION
+  timeframe       String
+  candleTimestamp DateTime?
+  evaluatedPrice  Decimal?             @db.Decimal(14, 5)
+  score           Int?
+  resultStatus    String               // PENDING_CONFIRMATION, CONFIRMED, EXPIRED, INVALIDATED
+  satisfiedRules  String[]             @default([])
+  failedRules     String[]             @default([])
+  reason          String
+  dataFreshness   String               @default("CURRENT")
+  evaluatedAt     DateTime             @default(now())
+  signalEvent     SignalLifecycleEvent @relation(fields: [signalEventId], references: [id], onDelete: Cascade)
+
+  @@index([signalEventId, evaluatedAt])
+}
+
+model NotificationJob {
+  id                 String                @id @default(uuid())
+  userId             String
+  signalEventId      String?
+  notificationType   String                // INITIAL_SIGNAL, CONFIRMED_SIGNAL, MANUAL_TEST
+  idempotencyKey     String                @unique
+  channel            String                @default("WHATSAPP")
+  recipient          String
+  payloadJson        Json
+  messageBody        String
+  status             String                @default("PENDING") // PENDING, PROCESSING, SENT, FAILED, RETRY_SCHEDULED
+  attemptCount       Int                   @default(0)
+  maxAttempts        Int                   @default(3)
+  nextRetryAt        DateTime?
+  lastAttemptAt      DateTime?
+  sentAt             DateTime?
+  providerMessageId  String?
+  sanitizedError     String?
+  isAmbiguousTimeout Boolean               @default(false)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signalEvent        SignalLifecycleEvent? @relation(fields: [signalEventId], references: [id], onDelete: SetNull)
+  attempts           NotificationAttempt[]
+
+  @@index([userId, status])
+  @@index([status, nextRetryAt])
+  @@index([signalEventId])
+  @@index([createdAt])
+}
+
+model NotificationAttempt {
+  id                String          @id @default(uuid())
+  jobId             String
+  attemptNumber     Int
+  status            String          // SENT, FAILED, TIMEOUT_AMBIGUOUS
+  httpStatus        Int?
+  providerMessageId String?
+  errorCode         String?
+  sanitizedResponse String?
+  durationMs        Int             @default(0)
+  attemptedAt       DateTime        @default(now())
+  job               NotificationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, attemptedAt])
+}
+

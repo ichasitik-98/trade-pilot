@@ -30,6 +30,7 @@ import {
 import { normalizeSymbol, CandleValidator } from '../../providers/market-data/normalization.ts';
 import { parseToUtcTimestamp, toUtcIsoString } from '../../utils/timezone.ts';
 import { db } from '../../db/storage.ts';
+import { twelveDataBudget } from '../../services/twelve-data-budget.ts';
 
 export class TwelveDataProvider implements MarketDataProvider {
   public readonly name = 'Twelve Data';
@@ -196,8 +197,16 @@ export class TwelveDataProvider implements MarketDataProvider {
         });
         clearTimeout(timeout);
 
+        const creditsUsedHeader = response.headers?.get?.('api-credits-used');
+        const creditsLeftHeader = response.headers?.get?.('api-credits-left');
+        twelveDataBudget.recordCreditUsage(1, {
+          creditsUsed: creditsUsedHeader ? Number(creditsUsedHeader) : null,
+          creditsLeft: creditsLeftHeader ? Number(creditsLeftHeader) : null,
+        });
+
         // HTTP-level error handling
         if (response.status === 429) {
+          twelveDataBudget.recordRateLimitHit(60_000);
           throw new MarketDataProviderError(
             'Twelve Data rate limit reached (HTTP 429). Please slow down requests.',
             this.name,
@@ -264,6 +273,7 @@ export class TwelveDataProvider implements MarketDataProvider {
 
           // 1. Quota / Rate limit
           if (code === 429 || /rate limit|minute|credits|credit limit/i.test(rawMsg)) {
+            twelveDataBudget.recordRateLimitHit(60_000);
             const isQuota = /quota|plan limit|exceeded/i.test(rawMsg);
             throw new MarketDataProviderError(
               rawMsg,

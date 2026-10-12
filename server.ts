@@ -19,9 +19,24 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true }));
 
   // Warm up persistent database asynchronously so port 3000 binds immediately
-  db.init().catch((err) => {
-    console.warn('[Server Startup] Initial database warm-up deferred:', err.message);
-  });
+  db.init()
+    .then(() => {
+      if ((process.env.ALERT_SCHEDULER_ENABLED || 'false').toLowerCase() === 'true') {
+        const intervalSec = Math.max(60, Number(process.env.ALERT_SCHEDULER_INTERVAL_SEC || 300));
+        console.log(`[AlertScheduler] Background Dual-Stage Signal evaluation enabled every ${intervalSec}s`);
+        setInterval(async () => {
+          try {
+            const { DualStageSignalAlertService } = await import('./server/services/dual-stage-signal-alert.ts');
+            await DualStageSignalAlertService.runEvaluationCycle({ triggerSource: 'SCHEDULER' });
+          } catch (schedErr: any) {
+            console.warn('[AlertScheduler] Background cycle error:', schedErr.message);
+          }
+        }, intervalSec * 1000);
+      }
+    })
+    .catch((err) => {
+      console.warn('[Server Startup] Initial database warm-up deferred:', err.message);
+    });
 
   // API router
   app.use('/api', apiRouter);
@@ -55,12 +70,21 @@ async function startServer() {
     const http = await import('http');
     httpServer = http.createServer(app);
 
-    // Vite Dev Server middleware with HMR disabled for preview stability
+    // Attach Vite Dev Server middleware and HMR WebSocket upgrade handler to the shared HTTP server
+    const hmrClientPort = process.env.HMR_CLIENT_PORT
+      ? parseInt(process.env.HMR_CLIENT_PORT, 10)
+      : undefined;
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: false,
+        hmr: {
+          server: httpServer,
+          protocol: (process.env.HMR_PROTOCOL as 'ws' | 'wss' | undefined) || undefined,
+          host: process.env.HMR_HOST || undefined,
+          clientPort: hmrClientPort,
+          path: process.env.HMR_PATH || undefined,
+        },
       },
       appType: 'spa',
     });

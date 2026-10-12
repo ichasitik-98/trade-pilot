@@ -35,6 +35,17 @@ import {
   TradeStatus,
   MarketBias,
   AssetClass,
+  Timeframe,
+  SignalAlertConfig,
+  SignalLifecycleEvent,
+  SignalEvaluationRecord,
+  NotificationJob,
+  NotificationAttempt,
+  SignalLifecycleStatus,
+  SignalNotificationDeliveryStatus,
+  NotificationJobStatus,
+  NotificationType,
+  InvalidationPolicy,
 } from '../types/index.ts';
 
 // ----------------------------------------------------
@@ -309,6 +320,152 @@ function mapMarketDataGap(g: any): MarketDataGap {
     detectedAt: g.detectedAt ? g.detectedAt.toISOString() : new Date().toISOString(),
     resolvedAt: g.resolvedAt ? g.resolvedAt.toISOString() : undefined,
     status: g.status as any,
+  };
+}
+
+function mapSignalAlertConfig(c: any): SignalAlertConfig {
+  return {
+    id: c.id,
+    userId: c.userId,
+    symbol: c.symbol,
+    enabled: Boolean(c.enabled),
+    htfDirectionTimeframe: (c.htfDirectionTimeframe || 'H4') as Timeframe,
+    htfConfirmationTimeframe: (c.htfConfirmationTimeframe || 'H1') as Timeframe,
+    primaryTimeframe: c.primaryTimeframe as Timeframe,
+    confirmationTimeframe: c.confirmationTimeframe as Timeframe,
+    initialScoreThreshold: Number(c.initialScoreThreshold),
+    confirmationScoreThreshold: Number(c.confirmationScoreThreshold),
+    requireClosedCandle: Boolean(c.requireClosedCandle),
+    requireTrendAlignment: Boolean(c.requireTrendAlignment),
+    requireStructureAlignment: Boolean(c.requireStructureAlignment),
+    requireMomentumAlignment: Boolean(c.requireMomentumAlignment),
+    minAdx: Number(c.minAdx),
+    expirationMinutes: Number(c.expirationMinutes),
+    invalidationPolicy: (c.invalidationPolicy || 'OPPOSITE_OR_STOP') as InvalidationPolicy,
+    enableInitialAlert: Boolean(c.enableInitialAlert),
+    enableConfirmationAlert: Boolean(c.enableConfirmationAlert),
+    whatsappEnabled: Boolean(c.whatsappEnabled),
+    whatsappRecipient: c.whatsappRecipient || null,
+    useTemplateMessage: Boolean(c.useTemplateMessage),
+    initialTemplateName: c.initialTemplateName || null,
+    confirmationTemplateName: c.confirmationTemplateName || null,
+    templateLanguage: c.templateLanguage || 'en_US',
+    configVersion: Number(c.configVersion || 1),
+    lastVerifiedTestAt: c.lastVerifiedTestAt ? c.lastVerifiedTestAt.toISOString() : null,
+    createdAt: c.createdAt ? c.createdAt.toISOString() : new Date().toISOString(),
+    updatedAt: c.updatedAt ? c.updatedAt.toISOString() : new Date().toISOString(),
+  };
+}
+
+function mapSignalEvaluationRecord(e: any): SignalEvaluationRecord {
+  return {
+    id: e.id,
+    signalEventId: e.signalEventId,
+    stage: e.stage === 'CONFIRMATION' ? 'CONFIRMATION' : 'INITIAL',
+    timeframe: e.timeframe,
+    candleTimestamp: e.candleTimestamp ? e.candleTimestamp.toISOString() : null,
+    evaluatedPrice: e.evaluatedPrice !== null && e.evaluatedPrice !== undefined ? Number(e.evaluatedPrice) : null,
+    score: e.score !== null && e.score !== undefined ? Number(e.score) : null,
+    resultStatus: e.resultStatus as SignalLifecycleStatus,
+    satisfiedRules: Array.isArray(e.satisfiedRules) ? e.satisfiedRules : [],
+    failedRules: Array.isArray(e.failedRules) ? e.failedRules : [],
+    reason: e.reason,
+    dataFreshness: e.dataFreshness || 'CURRENT',
+    evaluatedAt: e.evaluatedAt ? e.evaluatedAt.toISOString() : new Date().toISOString(),
+  };
+}
+
+function mapSignalLifecycleEvent(ev: any): SignalLifecycleEvent {
+  return {
+    id: ev.id,
+    userId: ev.userId,
+    configId: ev.configId || null,
+    signalRunId: ev.signalRunId || null,
+    idempotencyKey: ev.idempotencyKey,
+    confirmationIdempotencyKey: ev.confirmationIdempotencyKey || null,
+    symbol: ev.symbol,
+    direction: ev.direction === 'SELL' ? 'SELL' : 'BUY',
+    htfDirectionTimeframe: ev.htfDirectionTimeframe || 'H4',
+    htfConfirmationTimeframe: ev.htfConfirmationTimeframe || 'H1',
+    primaryTimeframe: ev.primaryTimeframe,
+    confirmationTimeframe: ev.confirmationTimeframe,
+    h4Direction: ev.h4Direction || null,
+    h1Trend: ev.h1Trend || null,
+    m15PullbackValid: Boolean(ev.m15PullbackValid),
+    m15PullbackReason: ev.m15PullbackReason || null,
+    m5BosDetected: Boolean(ev.m5BosDetected),
+    m5CandleConfirmed: Boolean(ev.m5CandleConfirmed),
+    primaryCandleTimestamp: ev.primaryCandleTimestamp.toISOString(),
+    isClosedCandle: Boolean(ev.isClosedCandle),
+    referencePrice: Number(ev.referencePrice),
+    entryPrice: Number(ev.entryPrice),
+    stopLoss: Number(ev.stopLoss),
+    takeProfit1: Number(ev.takeProfit1),
+    takeProfit2: ev.takeProfit2 !== null && ev.takeProfit2 !== undefined ? Number(ev.takeProfit2) : null,
+    riskReward: Number(ev.riskReward),
+    initialScore: Number(ev.initialScore),
+    initialStatus: ev.initialStatus,
+    lifecycleStatus: ev.lifecycleStatus as SignalLifecycleStatus,
+    initialNotificationStatus: ev.initialNotificationStatus as SignalNotificationDeliveryStatus,
+    confirmationNotificationStatus: ev.confirmationNotificationStatus as SignalNotificationDeliveryStatus,
+    dataFreshnessStatus: ev.dataFreshnessStatus || 'CURRENT',
+    initialExplanation: ev.initialExplanation,
+    confirmationScore: ev.confirmationScore !== null && ev.confirmationScore !== undefined ? Number(ev.confirmationScore) : null,
+    confirmationCandleTimestamp: ev.confirmationCandleTimestamp ? ev.confirmationCandleTimestamp.toISOString() : null,
+    confirmedAt: ev.confirmedAt ? ev.confirmedAt.toISOString() : null,
+    confirmationReason: ev.confirmationReason || null,
+    expiredAt: ev.expiredAt ? ev.expiredAt.toISOString() : null,
+    expirationReason: ev.expirationReason || null,
+    invalidatedAt: ev.invalidatedAt ? ev.invalidatedAt.toISOString() : null,
+    invalidationReason: ev.invalidationReason || null,
+    conflictingDirection: ev.conflictingDirection || null,
+    expiresAt: ev.expiresAt.toISOString(),
+    lastEvaluatedAt: ev.lastEvaluatedAt ? ev.lastEvaluatedAt.toISOString() : null,
+    evaluationCount: Number(ev.evaluationCount || 0),
+    createdAt: ev.createdAt ? ev.createdAt.toISOString() : new Date().toISOString(),
+    updatedAt: ev.updatedAt ? ev.updatedAt.toISOString() : new Date().toISOString(),
+    evaluations: Array.isArray(ev.evaluations) ? ev.evaluations.map(mapSignalEvaluationRecord) : undefined,
+  };
+}
+
+function mapNotificationAttempt(a: any): NotificationAttempt {
+  return {
+    id: a.id,
+    jobId: a.jobId,
+    attemptNumber: Number(a.attemptNumber),
+    status: a.status as 'SENT' | 'FAILED' | 'TIMEOUT_AMBIGUOUS',
+    httpStatus: a.httpStatus !== null && a.httpStatus !== undefined ? Number(a.httpStatus) : null,
+    providerMessageId: a.providerMessageId || null,
+    errorCode: a.errorCode || null,
+    sanitizedResponse: a.sanitizedResponse || null,
+    durationMs: Number(a.durationMs || 0),
+    attemptedAt: a.attemptedAt ? a.attemptedAt.toISOString() : new Date().toISOString(),
+  };
+}
+
+function mapNotificationJob(j: any): NotificationJob {
+  return {
+    id: j.id,
+    userId: j.userId,
+    signalEventId: j.signalEventId || null,
+    notificationType: j.notificationType as NotificationType,
+    idempotencyKey: j.idempotencyKey,
+    channel: j.channel || 'WHATSAPP',
+    recipient: j.recipient,
+    payloadJson: (j.payloadJson as Record<string, any>) || {},
+    messageBody: j.messageBody,
+    status: j.status as NotificationJobStatus,
+    attemptCount: Number(j.attemptCount || 0),
+    maxAttempts: Number(j.maxAttempts || 3),
+    nextRetryAt: j.nextRetryAt ? j.nextRetryAt.toISOString() : null,
+    lastAttemptAt: j.lastAttemptAt ? j.lastAttemptAt.toISOString() : null,
+    sentAt: j.sentAt ? j.sentAt.toISOString() : null,
+    providerMessageId: j.providerMessageId || null,
+    sanitizedError: j.sanitizedError || null,
+    isAmbiguousTimeout: Boolean(j.isAmbiguousTimeout),
+    createdAt: j.createdAt ? j.createdAt.toISOString() : new Date().toISOString(),
+    updatedAt: j.updatedAt ? j.updatedAt.toISOString() : new Date().toISOString(),
+    attempts: Array.isArray(j.attempts) ? j.attempts.map(mapNotificationAttempt) : undefined,
   };
 }
 
@@ -1546,6 +1703,666 @@ export class DatabaseStore {
       },
     });
     return mapMarketDataGap(created);
+  }
+
+  // ----------------------------------------------------
+  // DUAL-STAGE SIGNAL ALERT CONFIGS
+  // ----------------------------------------------------
+
+  /**
+   * Ensures the default XAUUSD 4-timeframe (H4 -> H1 -> M15 -> M5) configuration is initialized first
+   * for the user without activating all 11 symbols for continuous background polling by default.
+   */
+  public async ensureDefaultXauusdAlertConfig(userId: string): Promise<SignalAlertConfig[]> {
+    await this.init();
+    const existing = await prisma.signalAlertConfig.findMany({
+      where: { userId },
+      orderBy: [{ enabled: 'desc' }, { symbol: 'asc' }],
+    });
+
+    if (existing.length > 0) {
+      // Automatically upgrade uncustomized v1 default XAUUSD (M15 -> H1) to the 4-timeframe chain (H4 -> H1 -> M15 -> M5)
+      if (
+        existing.length === 1 &&
+        existing[0].symbol === 'XAUUSD' &&
+        existing[0].primaryTimeframe === 'M15' &&
+        existing[0].confirmationTimeframe === 'H1' &&
+        existing[0].configVersion === 1
+      ) {
+        const upgraded = await prisma.signalAlertConfig.update({
+          where: { id: existing[0].id },
+          data: {
+            htfDirectionTimeframe: 'H4',
+            htfConfirmationTimeframe: 'H1',
+            primaryTimeframe: 'M15',
+            confirmationTimeframe: 'M5',
+          },
+        });
+        return [mapSignalAlertConfig(upgraded)];
+      }
+      return existing.map(mapSignalAlertConfig);
+    }
+
+    const defaultRecipient = (process.env.WHATSAPP_RECIPIENT_NUMBER || '').trim() || null;
+    const created = await prisma.signalAlertConfig.create({
+      data: {
+        userId,
+        symbol: 'XAUUSD',
+        enabled: true,
+        htfDirectionTimeframe: 'H4',
+        htfConfirmationTimeframe: 'H1',
+        primaryTimeframe: 'M15',
+        confirmationTimeframe: 'M5',
+        initialScoreThreshold: 65,
+        confirmationScoreThreshold: 65,
+        requireClosedCandle: true,
+        requireTrendAlignment: true,
+        requireStructureAlignment: true,
+        requireMomentumAlignment: false,
+        minAdx: 18.0,
+        expirationMinutes: 240,
+        invalidationPolicy: 'OPPOSITE_OR_STOP',
+        enableInitialAlert: true,
+        enableConfirmationAlert: true,
+        whatsappEnabled: false,
+        whatsappRecipient: defaultRecipient,
+        useTemplateMessage: false,
+        templateLanguage: 'en_US',
+        configVersion: 1,
+      },
+    });
+
+    return [mapSignalAlertConfig(created)];
+  }
+
+  public async getSignalAlertConfigsByUserId(userId: string): Promise<SignalAlertConfig[]> {
+    return this.ensureDefaultXauusdAlertConfig(userId);
+  }
+
+  public async getEnabledSignalAlertConfigs(params?: {
+    userId?: string;
+    symbol?: string;
+  }): Promise<SignalAlertConfig[]> {
+    await this.init();
+    const where: any = { enabled: true };
+    if (params?.userId) where.userId = params.userId;
+    if (params?.symbol) where.symbol = params.symbol.toUpperCase().replace(/[\/\_\-\.]/g, '');
+
+    const list = await prisma.signalAlertConfig.findMany({
+      where,
+      orderBy: [{ symbol: 'asc' }, { updatedAt: 'desc' }],
+    });
+    return list.map(mapSignalAlertConfig);
+  }
+
+  public async getSignalAlertConfigById(id: string): Promise<SignalAlertConfig | undefined> {
+    await this.init();
+    const c = await prisma.signalAlertConfig.findUnique({ where: { id } });
+    return c ? mapSignalAlertConfig(c) : undefined;
+  }
+
+  public async upsertSignalAlertConfig(
+    userId: string,
+    input: Partial<SignalAlertConfig> & {
+      symbol: string;
+      primaryTimeframe: Timeframe;
+      confirmationTimeframe: Timeframe;
+    }
+  ): Promise<SignalAlertConfig> {
+    await this.init();
+    const sym = input.symbol.toUpperCase().replace(/[\/\_\-\.]/g, '');
+    const pTf = input.primaryTimeframe.toUpperCase();
+    const cTf = input.confirmationTimeframe.toUpperCase();
+
+    const htfDirTf = (input.htfDirectionTimeframe || 'H4').toUpperCase();
+    const htfConfTf = (input.htfConfirmationTimeframe || 'H1').toUpperCase();
+
+    if (input.id) {
+      const existingById = await prisma.signalAlertConfig.findFirst({
+        where: { id: input.id, userId },
+      });
+      if (existingById) {
+        const recipientChanged =
+          input.whatsappRecipient !== undefined &&
+          (input.whatsappRecipient || null) !== (existingById.whatsappRecipient || null);
+        const updated = await prisma.signalAlertConfig.update({
+          where: { id: existingById.id },
+          data: {
+            symbol: sym,
+            htfDirectionTimeframe: htfDirTf,
+            htfConfirmationTimeframe: htfConfTf,
+            primaryTimeframe: pTf,
+            confirmationTimeframe: cTf,
+            ...(input.enabled !== undefined ? { enabled: Boolean(input.enabled) } : {}),
+            ...(input.initialScoreThreshold !== undefined ? { initialScoreThreshold: Number(input.initialScoreThreshold) } : {}),
+            ...(input.confirmationScoreThreshold !== undefined ? { confirmationScoreThreshold: Number(input.confirmationScoreThreshold) } : {}),
+            ...(input.requireClosedCandle !== undefined ? { requireClosedCandle: Boolean(input.requireClosedCandle) } : {}),
+            ...(input.requireTrendAlignment !== undefined ? { requireTrendAlignment: Boolean(input.requireTrendAlignment) } : {}),
+            ...(input.requireStructureAlignment !== undefined ? { requireStructureAlignment: Boolean(input.requireStructureAlignment) } : {}),
+            ...(input.requireMomentumAlignment !== undefined ? { requireMomentumAlignment: Boolean(input.requireMomentumAlignment) } : {}),
+            ...(input.minAdx !== undefined ? { minAdx: Number(input.minAdx) } : {}),
+            ...(input.expirationMinutes !== undefined ? { expirationMinutes: Number(input.expirationMinutes) } : {}),
+            ...(input.invalidationPolicy !== undefined ? { invalidationPolicy: input.invalidationPolicy } : {}),
+            ...(input.enableInitialAlert !== undefined ? { enableInitialAlert: Boolean(input.enableInitialAlert) } : {}),
+            ...(input.enableConfirmationAlert !== undefined ? { enableConfirmationAlert: Boolean(input.enableConfirmationAlert) } : {}),
+            ...(input.whatsappEnabled !== undefined ? { whatsappEnabled: Boolean(input.whatsappEnabled) } : {}),
+            ...(input.whatsappRecipient !== undefined ? { whatsappRecipient: input.whatsappRecipient || null } : {}),
+            ...(recipientChanged ? { lastVerifiedTestAt: null } : {}),
+            ...(input.useTemplateMessage !== undefined ? { useTemplateMessage: Boolean(input.useTemplateMessage) } : {}),
+            ...(input.initialTemplateName !== undefined ? { initialTemplateName: input.initialTemplateName || null } : {}),
+            ...(input.confirmationTemplateName !== undefined ? { confirmationTemplateName: input.confirmationTemplateName || null } : {}),
+            ...(input.templateLanguage !== undefined ? { templateLanguage: input.templateLanguage || 'en_US' } : {}),
+            configVersion: { increment: 1 },
+          },
+        });
+        return mapSignalAlertConfig(updated);
+      }
+    }
+
+    const existingComposite = await prisma.signalAlertConfig.findUnique({
+      where: {
+        userId_symbol_primaryTimeframe_confirmationTimeframe: {
+          userId,
+          symbol: sym,
+          primaryTimeframe: pTf,
+          confirmationTimeframe: cTf,
+        },
+      },
+    });
+    const compositeRecipientChanged =
+      existingComposite &&
+      input.whatsappRecipient !== undefined &&
+      (input.whatsappRecipient || null) !== (existingComposite.whatsappRecipient || null);
+
+    const upserted = await prisma.signalAlertConfig.upsert({
+      where: {
+        userId_symbol_primaryTimeframe_confirmationTimeframe: {
+          userId,
+          symbol: sym,
+          primaryTimeframe: pTf,
+          confirmationTimeframe: cTf,
+        },
+      },
+      update: {
+        htfDirectionTimeframe: htfDirTf,
+        htfConfirmationTimeframe: htfConfTf,
+        ...(input.enabled !== undefined ? { enabled: Boolean(input.enabled) } : {}),
+        ...(input.initialScoreThreshold !== undefined ? { initialScoreThreshold: Number(input.initialScoreThreshold) } : {}),
+        ...(input.confirmationScoreThreshold !== undefined ? { confirmationScoreThreshold: Number(input.confirmationScoreThreshold) } : {}),
+        ...(input.requireClosedCandle !== undefined ? { requireClosedCandle: Boolean(input.requireClosedCandle) } : {}),
+        ...(input.requireTrendAlignment !== undefined ? { requireTrendAlignment: Boolean(input.requireTrendAlignment) } : {}),
+        ...(input.requireStructureAlignment !== undefined ? { requireStructureAlignment: Boolean(input.requireStructureAlignment) } : {}),
+        ...(input.requireMomentumAlignment !== undefined ? { requireMomentumAlignment: Boolean(input.requireMomentumAlignment) } : {}),
+        ...(input.minAdx !== undefined ? { minAdx: Number(input.minAdx) } : {}),
+        ...(input.expirationMinutes !== undefined ? { expirationMinutes: Number(input.expirationMinutes) } : {}),
+        ...(input.invalidationPolicy !== undefined ? { invalidationPolicy: input.invalidationPolicy } : {}),
+        ...(input.enableInitialAlert !== undefined ? { enableInitialAlert: Boolean(input.enableInitialAlert) } : {}),
+        ...(input.enableConfirmationAlert !== undefined ? { enableConfirmationAlert: Boolean(input.enableConfirmationAlert) } : {}),
+        ...(input.whatsappEnabled !== undefined ? { whatsappEnabled: Boolean(input.whatsappEnabled) } : {}),
+        ...(input.whatsappRecipient !== undefined ? { whatsappRecipient: input.whatsappRecipient || null } : {}),
+        ...(compositeRecipientChanged ? { lastVerifiedTestAt: null } : {}),
+        ...(input.useTemplateMessage !== undefined ? { useTemplateMessage: Boolean(input.useTemplateMessage) } : {}),
+        ...(input.initialTemplateName !== undefined ? { initialTemplateName: input.initialTemplateName || null } : {}),
+        ...(input.confirmationTemplateName !== undefined ? { confirmationTemplateName: input.confirmationTemplateName || null } : {}),
+        ...(input.templateLanguage !== undefined ? { templateLanguage: input.templateLanguage || 'en_US' } : {}),
+        configVersion: { increment: 1 },
+      },
+      create: {
+        userId,
+        symbol: sym,
+        enabled: input.enabled ?? true,
+        htfDirectionTimeframe: htfDirTf,
+        htfConfirmationTimeframe: htfConfTf,
+        primaryTimeframe: pTf,
+        confirmationTimeframe: cTf,
+        initialScoreThreshold: input.initialScoreThreshold ?? 65,
+        confirmationScoreThreshold: input.confirmationScoreThreshold ?? 65,
+        requireClosedCandle: input.requireClosedCandle ?? true,
+        requireTrendAlignment: input.requireTrendAlignment ?? true,
+        requireStructureAlignment: input.requireStructureAlignment ?? true,
+        requireMomentumAlignment: input.requireMomentumAlignment ?? false,
+        minAdx: input.minAdx ?? 18.0,
+        expirationMinutes: input.expirationMinutes ?? 240,
+        invalidationPolicy: input.invalidationPolicy || 'OPPOSITE_OR_STOP',
+        enableInitialAlert: input.enableInitialAlert ?? true,
+        enableConfirmationAlert: input.enableConfirmationAlert ?? true,
+        whatsappEnabled: input.whatsappEnabled ?? false,
+        whatsappRecipient: input.whatsappRecipient || null,
+        useTemplateMessage: input.useTemplateMessage ?? false,
+        initialTemplateName: input.initialTemplateName || null,
+        confirmationTemplateName: input.confirmationTemplateName || null,
+        templateLanguage: input.templateLanguage || 'en_US',
+        configVersion: 1,
+      },
+    });
+
+    return mapSignalAlertConfig(upserted);
+  }
+
+  public async deleteSignalAlertConfig(id: string, userId: string): Promise<boolean> {
+    await this.init();
+    const existing = await prisma.signalAlertConfig.findFirst({ where: { id, userId } });
+    if (!existing) return false;
+    await prisma.signalAlertConfig.delete({ where: { id } });
+    return true;
+  }
+
+  public async markWhatsAppVerifiedForUser(userId: string, verifiedAt: Date = new Date()): Promise<void> {
+    await this.init();
+    await prisma.signalAlertConfig.updateMany({
+      where: { userId },
+      data: { lastVerifiedTestAt: verifiedAt },
+    });
+  }
+
+  // ----------------------------------------------------
+  // SIGNAL LIFECYCLE EVENTS & EVALUATION RECORDS
+  // ----------------------------------------------------
+
+  public async getSignalLifecycleEvents(params: {
+    userId?: string;
+    symbol?: string;
+    lifecycleStatus?: string;
+    limit?: number;
+  }): Promise<SignalLifecycleEvent[]> {
+    await this.init();
+    const where: any = {};
+    if (params.userId) where.userId = params.userId;
+    if (params.symbol) where.symbol = params.symbol.toUpperCase().replace(/[\/\_\-\.]/g, '');
+    if (params.lifecycleStatus) where.lifecycleStatus = params.lifecycleStatus;
+
+    const events = await prisma.signalLifecycleEvent.findMany({
+      where,
+      include: {
+        evaluations: {
+          orderBy: { evaluatedAt: 'desc' },
+          take: 10,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: params.limit ?? 50,
+    });
+
+    return events.map(mapSignalLifecycleEvent);
+  }
+
+  public async getSignalLifecycleEventById(id: string): Promise<SignalLifecycleEvent | undefined> {
+    await this.init();
+    const ev = await prisma.signalLifecycleEvent.findUnique({
+      where: { id },
+      include: {
+        evaluations: {
+          orderBy: { evaluatedAt: 'asc' },
+        },
+      },
+    });
+    return ev ? mapSignalLifecycleEvent(ev) : undefined;
+  }
+
+  public async getSignalLifecycleEventByIdempotencyKey(
+    idempotencyKey: string
+  ): Promise<SignalLifecycleEvent | undefined> {
+    await this.init();
+    const ev = await prisma.signalLifecycleEvent.findUnique({
+      where: { idempotencyKey },
+      include: {
+        evaluations: {
+          orderBy: { evaluatedAt: 'asc' },
+        },
+      },
+    });
+    return ev ? mapSignalLifecycleEvent(ev) : undefined;
+  }
+
+  public async getPendingConfirmationEvents(params?: {
+    userId?: string;
+    symbol?: string;
+  }): Promise<SignalLifecycleEvent[]> {
+    await this.init();
+    const where: any = {
+      lifecycleStatus: 'PENDING_CONFIRMATION',
+    };
+    if (params?.userId) where.userId = params.userId;
+    if (params?.symbol) where.symbol = params.symbol.toUpperCase().replace(/[\/\_\-\.]/g, '');
+
+    const list = await prisma.signalLifecycleEvent.findMany({
+      where,
+      include: {
+        evaluations: {
+          orderBy: { evaluatedAt: 'asc' },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return list.map(mapSignalLifecycleEvent);
+  }
+
+  public async createSignalLifecycleEvent(
+    event: Omit<SignalLifecycleEvent, 'createdAt' | 'updatedAt' | 'evaluations'>,
+    initialEval?: Omit<SignalEvaluationRecord, 'id' | 'signalEventId' | 'evaluatedAt'>
+  ): Promise<SignalLifecycleEvent> {
+    await this.init();
+
+    // Idempotent check first
+    const existing = await prisma.signalLifecycleEvent.findUnique({
+      where: { idempotencyKey: event.idempotencyKey },
+      include: { evaluations: true },
+    });
+    if (existing) {
+      return mapSignalLifecycleEvent(existing);
+    }
+
+    const created = await prisma.signalLifecycleEvent.create({
+      data: {
+        id: event.id || crypto.randomUUID(),
+        userId: event.userId,
+        configId: event.configId || null,
+        signalRunId: event.signalRunId || null,
+        idempotencyKey: event.idempotencyKey,
+        confirmationIdempotencyKey: event.confirmationIdempotencyKey || null,
+        symbol: event.symbol.toUpperCase().replace(/[\/\_\-\.]/g, ''),
+        direction: event.direction === 'SELL' ? 'SELL' : 'BUY',
+        htfDirectionTimeframe: (event.htfDirectionTimeframe || 'H4').toUpperCase(),
+        htfConfirmationTimeframe: (event.htfConfirmationTimeframe || 'H1').toUpperCase(),
+        primaryTimeframe: event.primaryTimeframe.toUpperCase(),
+        confirmationTimeframe: event.confirmationTimeframe.toUpperCase(),
+        h4Direction: event.h4Direction || null,
+        h1Trend: event.h1Trend || null,
+        m15PullbackValid: Boolean(event.m15PullbackValid),
+        m15PullbackReason: event.m15PullbackReason || null,
+        m5BosDetected: Boolean(event.m5BosDetected),
+        m5CandleConfirmed: Boolean(event.m5CandleConfirmed),
+        primaryCandleTimestamp: new Date(event.primaryCandleTimestamp),
+        isClosedCandle: event.isClosedCandle,
+        referencePrice: event.referencePrice,
+        entryPrice: event.entryPrice,
+        stopLoss: event.stopLoss,
+        takeProfit1: event.takeProfit1,
+        takeProfit2: event.takeProfit2 ?? null,
+        riskReward: event.riskReward,
+        initialScore: event.initialScore,
+        initialStatus: event.initialStatus,
+        lifecycleStatus: event.lifecycleStatus,
+        initialNotificationStatus: event.initialNotificationStatus || 'NOT_QUEUED',
+        confirmationNotificationStatus: event.confirmationNotificationStatus || 'NOT_QUEUED',
+        dataFreshnessStatus: event.dataFreshnessStatus || 'CURRENT',
+        initialExplanation: event.initialExplanation,
+        expiresAt: new Date(event.expiresAt),
+        lastEvaluatedAt: event.lastEvaluatedAt ? new Date(event.lastEvaluatedAt) : new Date(),
+        evaluationCount: event.evaluationCount ?? 1,
+        ...(initialEval
+          ? {
+              evaluations: {
+                create: {
+                  stage: initialEval.stage,
+                  timeframe: initialEval.timeframe,
+                  candleTimestamp: initialEval.candleTimestamp ? new Date(initialEval.candleTimestamp) : null,
+                  evaluatedPrice: initialEval.evaluatedPrice ?? null,
+                  score: initialEval.score ?? null,
+                  resultStatus: initialEval.resultStatus,
+                  satisfiedRules: initialEval.satisfiedRules || [],
+                  failedRules: initialEval.failedRules || [],
+                  reason: initialEval.reason,
+                  dataFreshness: initialEval.dataFreshness || 'CURRENT',
+                },
+              },
+            }
+          : {}),
+      },
+      include: {
+        evaluations: {
+          orderBy: { evaluatedAt: 'asc' },
+        },
+      },
+    });
+
+    return mapSignalLifecycleEvent(created);
+  }
+
+  public async updateSignalLifecycleEvent(
+    id: string,
+    updates: Partial<SignalLifecycleEvent>,
+    evaluationRecord?: Omit<SignalEvaluationRecord, 'id' | 'signalEventId' | 'evaluatedAt'>
+  ): Promise<SignalLifecycleEvent> {
+    await this.init();
+    const data: any = {
+      lastEvaluatedAt: new Date(),
+    };
+
+    if (updates.lifecycleStatus !== undefined) data.lifecycleStatus = updates.lifecycleStatus;
+    if (updates.initialNotificationStatus !== undefined) {
+      data.initialNotificationStatus = updates.initialNotificationStatus;
+    }
+    if (updates.confirmationNotificationStatus !== undefined) {
+      data.confirmationNotificationStatus = updates.confirmationNotificationStatus;
+    }
+    if (updates.confirmationIdempotencyKey !== undefined) {
+      data.confirmationIdempotencyKey = updates.confirmationIdempotencyKey;
+    }
+    if (updates.confirmationScore !== undefined) data.confirmationScore = updates.confirmationScore;
+    if (updates.confirmationCandleTimestamp !== undefined) {
+      data.confirmationCandleTimestamp = updates.confirmationCandleTimestamp
+        ? new Date(updates.confirmationCandleTimestamp)
+        : null;
+    }
+    if (updates.confirmedAt !== undefined) {
+      data.confirmedAt = updates.confirmedAt ? new Date(updates.confirmedAt) : null;
+    }
+    if (updates.confirmationReason !== undefined) data.confirmationReason = updates.confirmationReason;
+    if (updates.expiredAt !== undefined) {
+      data.expiredAt = updates.expiredAt ? new Date(updates.expiredAt) : null;
+    }
+    if (updates.expirationReason !== undefined) data.expirationReason = updates.expirationReason;
+    if (updates.invalidatedAt !== undefined) {
+      data.invalidatedAt = updates.invalidatedAt ? new Date(updates.invalidatedAt) : null;
+    }
+    if (updates.invalidationReason !== undefined) data.invalidationReason = updates.invalidationReason;
+    if (updates.conflictingDirection !== undefined) data.conflictingDirection = updates.conflictingDirection;
+    if (updates.h4Direction !== undefined) data.h4Direction = updates.h4Direction;
+    if (updates.h1Trend !== undefined) data.h1Trend = updates.h1Trend;
+    if (updates.m15PullbackValid !== undefined) data.m15PullbackValid = Boolean(updates.m15PullbackValid);
+    if (updates.m15PullbackReason !== undefined) data.m15PullbackReason = updates.m15PullbackReason;
+    if (updates.m5BosDetected !== undefined) data.m5BosDetected = Boolean(updates.m5BosDetected);
+    if (updates.m5CandleConfirmed !== undefined) data.m5CandleConfirmed = Boolean(updates.m5CandleConfirmed);
+    if (evaluationRecord) {
+      data.evaluationCount = { increment: 1 };
+      data.evaluations = {
+        create: {
+          stage: evaluationRecord.stage,
+          timeframe: evaluationRecord.timeframe,
+          candleTimestamp: evaluationRecord.candleTimestamp ? new Date(evaluationRecord.candleTimestamp) : null,
+          evaluatedPrice: evaluationRecord.evaluatedPrice ?? null,
+          score: evaluationRecord.score ?? null,
+          resultStatus: evaluationRecord.resultStatus,
+          satisfiedRules: evaluationRecord.satisfiedRules || [],
+          failedRules: evaluationRecord.failedRules || [],
+          reason: evaluationRecord.reason,
+          dataFreshness: evaluationRecord.dataFreshness || 'CURRENT',
+        },
+      };
+    }
+
+    const updated = await prisma.signalLifecycleEvent.update({
+      where: { id },
+      data,
+      include: {
+        evaluations: {
+          orderBy: { evaluatedAt: 'asc' },
+        },
+      },
+    });
+
+    return mapSignalLifecycleEvent(updated);
+  }
+
+  // ----------------------------------------------------
+  // WHATSAPP NOTIFICATION JOBS & ATTEMPTS
+  // ----------------------------------------------------
+
+  public async getNotificationJobByIdempotencyKey(
+    idempotencyKey: string
+  ): Promise<NotificationJob | undefined> {
+    await this.init();
+    const job = await prisma.notificationJob.findUnique({
+      where: { idempotencyKey },
+      include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+    });
+    return job ? mapNotificationJob(job) : undefined;
+  }
+
+  public async createNotificationJob(
+    job: Omit<NotificationJob, 'createdAt' | 'updatedAt' | 'attempts'>
+  ): Promise<NotificationJob> {
+    await this.init();
+    const existing = await prisma.notificationJob.findUnique({
+      where: { idempotencyKey: job.idempotencyKey },
+      include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+    });
+    if (existing) {
+      return mapNotificationJob(existing);
+    }
+
+    const created = await prisma.notificationJob.create({
+      data: {
+        id: job.id || crypto.randomUUID(),
+        userId: job.userId,
+        signalEventId: job.signalEventId || null,
+        notificationType: job.notificationType,
+        idempotencyKey: job.idempotencyKey,
+        channel: job.channel || 'WHATSAPP',
+        recipient: job.recipient,
+        payloadJson: job.payloadJson as any,
+        messageBody: job.messageBody,
+        status: job.status || 'PENDING',
+        attemptCount: job.attemptCount ?? 0,
+        maxAttempts: job.maxAttempts ?? 3,
+        nextRetryAt: job.nextRetryAt ? new Date(job.nextRetryAt) : new Date(),
+        isAmbiguousTimeout: job.isAmbiguousTimeout ?? false,
+      },
+      include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+    });
+
+    return mapNotificationJob(created);
+  }
+
+  public async getPendingNotificationJobs(limit: number = 15, userId?: string): Promise<NotificationJob[]> {
+    await this.init();
+    const now = new Date();
+    const where: any = {
+      status: { in: ['PENDING', 'RETRY_SCHEDULED'] },
+      isAmbiguousTimeout: false,
+      OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+    };
+    if (userId) {
+      where.userId = userId;
+    }
+    const jobs = await prisma.notificationJob.findMany({
+      where,
+      include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+    return jobs.map(mapNotificationJob);
+  }
+
+  public async getNotificationJobsByUserId(userId: string, limit: number = 40): Promise<NotificationJob[]> {
+    await this.init();
+    const jobs = await prisma.notificationJob.findMany({
+      where: { userId },
+      include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+    return jobs.map(mapNotificationJob);
+  }
+
+  public async recordNotificationAttempt(params: {
+    jobId: string;
+    status: 'SENT' | 'FAILED' | 'TIMEOUT_AMBIGUOUS';
+    httpStatus?: number | null;
+    providerMessageId?: string | null;
+    errorCode?: string | null;
+    sanitizedResponse?: string | null;
+    durationMs: number;
+    nextRetryAt?: Date | null;
+    isAmbiguousTimeout?: boolean;
+  }): Promise<NotificationJob> {
+    await this.init();
+    const current = await prisma.notificationJob.findUnique({ where: { id: params.jobId } });
+    if (!current) {
+      throw new Error(`NotificationJob not found: ${params.jobId}`);
+    }
+
+    const attemptNumber = current.attemptCount + 1;
+    let nextJobStatus: NotificationJobStatus = 'FAILED';
+
+    if (params.status === 'SENT') {
+      nextJobStatus = 'SENT';
+    } else if (params.isAmbiguousTimeout || params.status === 'TIMEOUT_AMBIGUOUS') {
+      // Never auto-retry an ambiguous timeout to avoid duplicate WhatsApp message spam
+      nextJobStatus = 'FAILED';
+    } else if (params.nextRetryAt && attemptNumber < current.maxAttempts) {
+      nextJobStatus = 'RETRY_SCHEDULED';
+    } else {
+      nextJobStatus = 'FAILED';
+    }
+
+    const updated = await prisma.notificationJob.update({
+      where: { id: params.jobId },
+      data: {
+        status: nextJobStatus,
+        attemptCount: attemptNumber,
+        lastAttemptAt: new Date(),
+        sentAt: params.status === 'SENT' ? new Date() : current.sentAt,
+        providerMessageId: params.providerMessageId || current.providerMessageId,
+        sanitizedError:
+          params.status === 'SENT'
+            ? null
+            : params.sanitizedResponse || params.errorCode || 'Delivery attempt failed',
+        nextRetryAt: nextJobStatus === 'RETRY_SCHEDULED' ? params.nextRetryAt : null,
+        isAmbiguousTimeout: Boolean(params.isAmbiguousTimeout || params.status === 'TIMEOUT_AMBIGUOUS'),
+        attempts: {
+          create: {
+            attemptNumber,
+            status: params.status,
+            httpStatus: params.httpStatus ?? null,
+            providerMessageId: params.providerMessageId || null,
+            errorCode: params.errorCode || null,
+            sanitizedResponse: params.sanitizedResponse || null,
+            durationMs: params.durationMs,
+          },
+        },
+      },
+      include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+    });
+
+    // Sync delivery status back to SignalLifecycleEvent if linked (without altering signal lifecycleStatus!)
+    if (updated.signalEventId) {
+      const deliveryStatus: SignalNotificationDeliveryStatus =
+        nextJobStatus === 'SENT'
+          ? 'NOTIFICATION_SENT'
+          : nextJobStatus === 'RETRY_SCHEDULED'
+          ? 'NOTIFICATION_PENDING'
+          : 'NOTIFICATION_FAILED';
+
+      const fieldToUpdate =
+        updated.notificationType === 'CONFIRMED_SIGNAL'
+          ? { confirmationNotificationStatus: deliveryStatus }
+          : updated.notificationType === 'INITIAL_SIGNAL'
+          ? { initialNotificationStatus: deliveryStatus }
+          : {};
+
+      if (Object.keys(fieldToUpdate).length > 0) {
+        await prisma.signalLifecycleEvent
+          .update({
+            where: { id: updated.signalEventId },
+            data: fieldToUpdate,
+          })
+          .catch(() => {});
+      }
+    }
+
+    return mapNotificationJob(updated);
   }
 }
 

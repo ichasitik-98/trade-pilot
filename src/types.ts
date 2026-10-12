@@ -296,3 +296,188 @@ export interface AuditLog {
   ipAddress?: string;
   timestamp: string;
 }
+
+export type SignalLifecycleStatus =
+  | 'DETECTED'
+  | 'PENDING_CONFIRMATION'
+  | 'CONFIRMED'
+  | 'EXPIRED'
+  | 'INVALIDATED';
+
+export type SignalNotificationDeliveryStatus =
+  | 'NOT_QUEUED'
+  | 'NOTIFICATION_PENDING'
+  | 'NOTIFICATION_SENT'
+  | 'NOTIFICATION_FAILED';
+
+export type NotificationJobStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'SENT'
+  | 'FAILED'
+  | 'RETRY_SCHEDULED';
+
+export type InvalidationPolicy = 'OPPOSITE_SIGNAL' | 'PRICE_STOP_BREACH' | 'OPPOSITE_OR_STOP';
+
+export interface SignalAlertConfig {
+  id: string;
+  userId: string;
+  symbol: string;
+  enabled: boolean;
+  htfDirectionTimeframe?: string;
+  htfConfirmationTimeframe?: string;
+  primaryTimeframe: string;
+  confirmationTimeframe: string;
+  initialScoreThreshold: number;
+  confirmationScoreThreshold: number;
+  requireClosedCandle: boolean;
+  requireTrendAlignment: boolean;
+  requireStructureAlignment: boolean;
+  requireMomentumAlignment: boolean;
+  minAdx: number;
+  expirationMinutes: number;
+  invalidationPolicy: InvalidationPolicy;
+  enableInitialAlert: boolean;
+  enableConfirmationAlert: boolean;
+  whatsappEnabled: boolean;
+  whatsappRecipient?: string | null;
+  useTemplateMessage: boolean;
+  initialTemplateName?: string | null;
+  confirmationTemplateName?: string | null;
+  templateLanguage: string;
+  configVersion: number;
+  lastVerifiedTestAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SignalEvaluationRecord {
+  id: string;
+  signalEventId: string;
+  stage: 'INITIAL' | 'CONFIRMATION';
+  timeframe: string;
+  candleTimestamp?: string | null;
+  evaluatedPrice?: number | null;
+  score?: number | null;
+  resultStatus: SignalLifecycleStatus;
+  satisfiedRules: string[];
+  failedRules: string[];
+  reason: string;
+  dataFreshness: string;
+  evaluatedAt: string;
+}
+
+export interface SignalLifecycleEvent {
+  id: string;
+  userId: string;
+  configId?: string | null;
+  signalRunId?: string | null;
+  idempotencyKey: string;
+  confirmationIdempotencyKey?: string | null;
+  symbol: string;
+  direction: 'BUY' | 'SELL';
+  htfDirectionTimeframe?: string;
+  htfConfirmationTimeframe?: string;
+  primaryTimeframe: string;
+  confirmationTimeframe: string;
+  h4Direction?: string | null;
+  h1Trend?: string | null;
+  m15PullbackValid?: boolean;
+  m15PullbackReason?: string | null;
+  m5BosDetected?: boolean;
+  m5CandleConfirmed?: boolean;
+  primaryCandleTimestamp: string;
+  isClosedCandle: boolean;
+  referencePrice: number;
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2?: number | null;
+  riskReward: number;
+  initialScore: number;
+  initialStatus: string;
+  lifecycleStatus: SignalLifecycleStatus;
+  initialNotificationStatus: SignalNotificationDeliveryStatus;
+  confirmationNotificationStatus: SignalNotificationDeliveryStatus;
+  dataFreshnessStatus: string;
+  initialExplanation: string;
+  confirmationScore?: number | null;
+  confirmationCandleTimestamp?: string | null;
+  confirmedAt?: string | null;
+  confirmationReason?: string | null;
+  expiredAt?: string | null;
+  expirationReason?: string | null;
+  invalidatedAt?: string | null;
+  invalidationReason?: string | null;
+  conflictingDirection?: string | null;
+  expiresAt: string;
+  lastEvaluatedAt?: string | null;
+  evaluationCount: number;
+  createdAt: string;
+  updatedAt: string;
+  evaluations?: SignalEvaluationRecord[];
+}
+
+export interface NotificationAttempt {
+  id: string;
+  jobId: string;
+  attemptNumber: number;
+  status: 'SENT' | 'FAILED' | 'TIMEOUT_AMBIGUOUS';
+  httpStatus?: number | null;
+  providerMessageId?: string | null;
+  errorCode?: string | null;
+  sanitizedResponse?: string | null;
+  durationMs: number;
+  attemptedAt: string;
+}
+
+export interface NotificationJob {
+  id: string;
+  userId: string;
+  signalEventId?: string | null;
+  notificationType: 'INITIAL_SIGNAL' | 'CONFIRMED_SIGNAL' | 'MANUAL_TEST';
+  idempotencyKey: string;
+  channel: string;
+  recipient: string;
+  payloadJson: Record<string, any>;
+  messageBody: string;
+  status: NotificationJobStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  nextRetryAt?: string | null;
+  lastAttemptAt?: string | null;
+  sentAt?: string | null;
+  providerMessageId?: string | null;
+  sanitizedError?: string | null;
+  isAmbiguousTimeout: boolean;
+  createdAt: string;
+  updatedAt: string;
+  attempts?: NotificationAttempt[];
+}
+
+export interface WhatsAppConnectionStatus {
+  configured: boolean;
+  envEnabled: boolean;
+  hasPhoneNumberId: boolean;
+  hasAccessToken: boolean;
+  hasDefaultRecipient: boolean;
+  maskedPhoneNumberId: string | null;
+  maskedDefaultRecipient: string | null;
+  apiVersion: string;
+  verifiedByManualTest: boolean;
+  lastSuccessfulDeliveryAt: string | null;
+  lastFailureAt: string | null;
+  lastFailureReason: string | null;
+}
+
+export interface TwelveDataQuotaBudgetStatus {
+  creditsUsedThisMinute: number;
+  maxCreditsPerMinute: number;
+  creditsUsedToday: number;
+  maxCreditsPerDay: number;
+  providerReportedCreditsUsed?: number | null;
+  providerReportedCreditsLeft?: number | null;
+  isRateLimited: boolean;
+  rateLimitResetAt?: string | null;
+}
+

@@ -1,4 +1,18 @@
-import { User, TradingAccount, RiskSetting, Trade, TradeStatistics, ScannerItem, Watchlist, AuditLog } from '../types.ts';
+import {
+  User,
+  TradingAccount,
+  RiskSetting,
+  Trade,
+  TradeStatistics,
+  ScannerItem,
+  Watchlist,
+  AuditLog,
+  SignalAlertConfig,
+  SignalLifecycleEvent,
+  NotificationJob,
+  WhatsAppConnectionStatus,
+  TwelveDataQuotaBudgetStatus,
+} from '../types.ts';
 
 const TOKEN_KEY = 'tradepilot_session_token';
 
@@ -309,4 +323,85 @@ export const api = {
 
   // Audit Logs
   getAuditLogs: () => request<{ logs: AuditLog[] }>('/audit-logs'),
+
+  // Dual-Stage Signal Alerts & WhatsApp Cloud API
+  getAlertsOverview: () =>
+    request<{
+      configs: SignalAlertConfig[];
+      events: SignalLifecycleEvent[];
+      notificationJobs: NotificationJob[];
+      whatsappStatus: WhatsAppConnectionStatus;
+      creditBudget: TwelveDataQuotaBudgetStatus;
+      supportedSymbols: string[];
+      supportedTimeframes: string[];
+    }>('/alerts/overview'),
+
+  getAlertConfigs: () => request<{ configs: SignalAlertConfig[] }>('/alerts/configs'),
+
+  saveAlertConfig: (data: Partial<SignalAlertConfig> & {
+    symbol: string;
+    primaryTimeframe: string;
+    confirmationTimeframe: string;
+  }) =>
+    request<{ config: SignalAlertConfig }>('/alerts/configs', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteAlertConfig: (id: string) =>
+    request<{ success: boolean }>(`/alerts/configs/${id}`, {
+      method: 'DELETE',
+    }),
+
+  getAlertEvents: (params?: { symbol?: string; status?: string; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.symbol) q.set('symbol', params.symbol);
+    if (params?.status) q.set('status', params.status);
+    if (params?.limit) q.set('limit', String(params.limit));
+    const queryStr = q.toString();
+    return request<{ events: SignalLifecycleEvent[] }>(
+      `/alerts/events${queryStr ? `?${queryStr}` : ''}`
+    );
+  },
+
+  runDualStageEvaluation: (symbol?: string) =>
+    request<{
+      report: any;
+      events: SignalLifecycleEvent[];
+      notificationJobs: NotificationJob[];
+      whatsappStatus: WhatsAppConnectionStatus;
+    }>('/alerts/evaluate', {
+      method: 'POST',
+      body: JSON.stringify(symbol ? { symbol } : {}),
+    }),
+
+  sendWhatsAppTestMessage: (recipient?: string) =>
+    request<{
+      success: boolean;
+      job: NotificationJob;
+      error?: string;
+      configs: SignalAlertConfig[];
+      whatsappStatus: WhatsAppConnectionStatus;
+      notificationJobs: NotificationJob[];
+    }>('/alerts/whatsapp/test', {
+      method: 'POST',
+      body: JSON.stringify(recipient ? { recipient } : {}),
+    }),
+
+  processWhatsAppQueue: () =>
+    request<{
+      queueResult: {
+        processedCount: number;
+        sentCount: number;
+        failedCount: number;
+        jobs: NotificationJob[];
+      };
+      events: SignalLifecycleEvent[];
+      notificationJobs: NotificationJob[];
+      whatsappStatus: WhatsAppConnectionStatus;
+    }>('/alerts/whatsapp/process-queue', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 };
+

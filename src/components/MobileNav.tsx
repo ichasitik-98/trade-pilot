@@ -9,6 +9,7 @@ import {
   Shield,
   Sparkles,
   Settings,
+  Bell,
 } from 'lucide-react';
 
 interface MobileNavProps {
@@ -24,6 +25,7 @@ export function MobileNav({ currentTab, onTabChange }: MobileNavProps) {
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'scanner', label: 'Scanner', icon: Radar },
     { id: 'pair-analysis', label: 'Terminal', icon: LineChart },
+    { id: 'signal-alerts', label: 'Alerts', icon: Bell },
     { id: 'watchlist', label: 'Watchlist', icon: Eye },
     { id: 'risk-manager', label: 'Risk', icon: Shield },
     { id: 'ai-analyst', label: 'AI', icon: Sparkles },

@@ -18,6 +18,7 @@ import { WatchlistPage } from './pages/WatchlistPage.tsx';
 import { RiskManagerPage } from './pages/RiskManagerPage.tsx';
 import { AiAnalystPage } from './pages/AiAnalystPage.tsx';
 import { SettingsPage } from './pages/SettingsPage.tsx';
+import { SignalAlertsPage } from './pages/SignalAlertsPage.tsx';
 import { AuthPage } from './pages/AuthPage.tsx';
 
 export default function App() {
@@ -207,6 +208,12 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'signal-alerts' && (
+            <SignalAlertsPage
+              onSelectPairForAnalysis={(pair) => handleSelectPairForTerminal(pair)}
+            />
+          )}
+
           {currentTab === 'watchlist' && (
             <WatchlistPage onSelectPairForAnalysis={(pair) => handleSelectPairForTerminal(pair)} />
           )}
@@ -220,6 +227,7 @@ export default function App() {
               user={user}
               accounts={accounts}
               onRefreshAccounts={() => initApp()}
+              onNavigateToAlerts={() => setCurrentTab('signal-alerts')}
             />
           )}
         </main>

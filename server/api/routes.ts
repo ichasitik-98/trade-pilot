@@ -39,8 +39,11 @@ import {
 } from '../providers/market-data/index.ts';
 import { MarketDataSyncService } from '../services/market-data-sync.ts';
 import { MultiTimeframeAnalysisService } from '../services/multi-timeframe.ts';
+import { DualStageSignalAlertService } from '../services/dual-stage-signal-alert.ts';
+import { twelveDataBudget } from '../services/twelve-data-budget.ts';
+import { whatsappCloudProvider, maskSensitiveIdentifier } from '../providers/whatsapp-cloud.ts';
 import { parseToUtcTimestamp } from '../utils/timezone.ts';
-import { Trade, TradeDirection, TradeStatus, Timeframe } from '../types/index.ts';
+import { Trade, TradeDirection, TradeStatus, Timeframe, TIMEFRAMES } from '../types/index.ts';
 
 export const apiRouter = Router();
 
@@ -1480,3 +1483,302 @@ apiRouter.get('/audit-logs', authenticate, async (req: Request, res: Response) =
   const logs = await db.getAuditLogs(user.id, 50);
   return res.json({ logs });
 });
+
+// ----------------------------------------------------
+// 9. DUAL-STAGE TRADING SIGNAL ALERTS & WHATSAPP CLOUD API
+// ----------------------------------------------------
+
+const SUPPORTED_ALERT_SYMBOLS = [
+  'XAUUSD',
+  'EURUSD',
+  'GBPUSD',
+  'USDJPY',
+  'USDCHF',
+  'USDCAD',
+  'AUDUSD',
+  'NZDUSD',
+  'EURJPY',
+  'GBPJPY',
+  'BTCUSD',
+] as const;
+
+const SUPPORTED_ALERT_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1'] as const;
+
+apiRouter.get('/alerts/overview', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const [configs, events, notificationJobs, whatsappStatus, xauusdAudit] = await Promise.all([
+    db.getSignalAlertConfigsByUserId(user.id),
+    db.getSignalLifecycleEvents({ userId: user.id, limit: 50 }),
+    db.getNotificationJobsByUserId(user.id, 40),
+    whatsappCloudProvider.getConnectionStatus(user.id),
+    DualStageSignalAlertService.auditSymbolAvailability('XAUUSD', false),
+  ]);
+
+  return res.json({
+    configs,
+    events,
+    notificationJobs,
+    whatsappStatus,
+    xauusdEntitlementAudit: xauusdAudit,
+    creditBudget: twelveDataBudget.getSnapshot(),
+    supportedSymbols: SUPPORTED_ALERT_SYMBOLS,
+    supportedTimeframes: SUPPORTED_ALERT_TIMEFRAMES,
+  });
+});
+
+apiRouter.get('/alerts/entitlement-audit', authenticate, async (req: Request, res: Response) => {
+  const symbol = req.query.symbol ? normalizeSymbol(String(req.query.symbol)) : 'XAUUSD';
+  const probe = String(req.query.probe || 'false').toLowerCase() === 'true';
+  const audit = await DualStageSignalAlertService.auditSymbolAvailability(symbol, probe);
+  return res.json({ audit });
+});
+
+apiRouter.get('/alerts/configs', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const configs = await db.getSignalAlertConfigsByUserId(user.id);
+  return res.json({ configs });
+});
+
+apiRouter.post('/alerts/configs', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const schema = z.object({
+    id: z.string().optional(),
+    symbol: z.string().min(3),
+    enabled: z.boolean().optional(),
+    htfDirectionTimeframe: z.enum(SUPPORTED_ALERT_TIMEFRAMES).optional(),
+    htfConfirmationTimeframe: z.enum(SUPPORTED_ALERT_TIMEFRAMES).optional(),
+    primaryTimeframe: z.enum(SUPPORTED_ALERT_TIMEFRAMES),
+    confirmationTimeframe: z.enum(SUPPORTED_ALERT_TIMEFRAMES),
+    initialScoreThreshold: z.number().int().min(40).max(95).optional(),
+    confirmationScoreThreshold: z.number().int().min(40).max(95).optional(),
+    requireClosedCandle: z.boolean().optional(),
+    requireTrendAlignment: z.boolean().optional(),
+    requireStructureAlignment: z.boolean().optional(),
+    requireMomentumAlignment: z.boolean().optional(),
+    minAdx: z.number().min(0).max(60).optional(),
+    expirationMinutes: z.number().int().min(15).max(10080).optional(),
+    invalidationPolicy: z.enum(['OPPOSITE_SIGNAL', 'PRICE_STOP_BREACH', 'OPPOSITE_OR_STOP']).optional(),
+    enableInitialAlert: z.boolean().optional(),
+    enableConfirmationAlert: z.boolean().optional(),
+    whatsappEnabled: z.boolean().optional(),
+    whatsappRecipient: z.string().nullable().optional(),
+    useTemplateMessage: z.boolean().optional(),
+    initialTemplateName: z.string().nullable().optional(),
+    confirmationTemplateName: z.string().nullable().optional(),
+    templateLanguage: z.string().optional(),
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0].message });
+  }
+
+  const normalizedSym = normalizeSymbol(parsed.data.symbol);
+  if (!SUPPORTED_ALERT_SYMBOLS.includes(normalizedSym as any)) {
+    return res.status(400).json({
+      error: `Unsupported symbol: ${normalizedSym}. Supported symbols: ${SUPPORTED_ALERT_SYMBOLS.join(', ')}`,
+    });
+  }
+
+  const saved = await db.upsertSignalAlertConfig(user.id, {
+    ...parsed.data,
+    symbol: normalizedSym,
+    htfDirectionTimeframe: (parsed.data.htfDirectionTimeframe || 'H4') as Timeframe,
+    htfConfirmationTimeframe: (parsed.data.htfConfirmationTimeframe || 'H1') as Timeframe,
+    primaryTimeframe: parsed.data.primaryTimeframe as Timeframe,
+    confirmationTimeframe: parsed.data.confirmationTimeframe as Timeframe,
+  });
+
+  await db.addAuditLog({
+    userId: user.id,
+    action: 'ALERT_CONFIG_UPDATED',
+    entity: 'SIGNAL_ALERT_CONFIG',
+    entityId: saved.id,
+    details: `Configured dual-stage alert for ${saved.symbol} (${saved.htfDirectionTimeframe || 'H4'} -> ${saved.htfConfirmationTimeframe || 'H1'} -> ${saved.primaryTimeframe} -> ${saved.confirmationTimeframe}) [Enabled: ${saved.enabled}, WA: ${saved.whatsappEnabled}]`,
+    ipAddress: req.ip,
+  });
+
+  return res.json({ config: saved });
+});
+
+apiRouter.delete('/alerts/configs/:id', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const deleted = await db.deleteSignalAlertConfig(req.params.id, user.id);
+  if (!deleted) {
+    return res.status(404).json({ error: 'Alert configuration not found' });
+  }
+  return res.json({ success: true });
+});
+
+apiRouter.get('/alerts/events', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const symbol = req.query.symbol ? normalizeSymbol(String(req.query.symbol)) : undefined;
+  const status = req.query.status ? String(req.query.status) : undefined;
+  const limit = req.query.limit ? Math.min(100, Math.max(1, Number(req.query.limit))) : 50;
+
+  const events = await db.getSignalLifecycleEvents({
+    userId: user.id,
+    symbol,
+    lifecycleStatus: status,
+    limit,
+  });
+
+  return res.json({ events });
+});
+
+apiRouter.get('/alerts/events/:id', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const event = await db.getSignalLifecycleEventById(req.params.id);
+  if (!event || event.userId !== user.id) {
+    return res.status(404).json({ error: 'Signal lifecycle event not found' });
+  }
+  return res.json({ event });
+});
+
+apiRouter.post('/alerts/evaluate', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const rawSymbol = req.body?.symbol ? normalizeSymbol(String(req.body.symbol)) : undefined;
+
+  const report = await DualStageSignalAlertService.runEvaluationCycle({
+    userId: user.id,
+    symbol: rawSymbol,
+    triggerSource: 'MANUAL',
+  });
+
+  await db.addAuditLog({
+    userId: user.id,
+    action: 'DUAL_STAGE_ALERT_EVALUATED',
+    entity: 'SIGNAL_ALERT_CYCLE',
+    details: `Manual dual-stage evaluation completed (Stage 1: ${report.stage1Evaluations.length}, Stage 2: ${report.stage2Evaluations.length})`,
+    ipAddress: req.ip,
+  });
+
+  const [events, notificationJobs, whatsappStatus] = await Promise.all([
+    db.getSignalLifecycleEvents({ userId: user.id, limit: 50 }),
+    db.getNotificationJobsByUserId(user.id, 40),
+    whatsappCloudProvider.getConnectionStatus(user.id),
+  ]);
+
+  return res.json({
+    report,
+    events,
+    notificationJobs,
+    whatsappStatus,
+  });
+});
+
+apiRouter.post('/alerts/whatsapp/test', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const recipientOverride =
+    typeof req.body?.recipient === 'string' && req.body.recipient.trim().length > 0
+      ? req.body.recipient.trim()
+      : undefined;
+
+  try {
+    const result = await whatsappCloudProvider.sendManualTestMessage({
+      userId: user.id,
+      recipientOverride,
+    });
+
+    await db.addAuditLog({
+      userId: user.id,
+      action: result.success ? 'WHATSAPP_TEST_VERIFIED' : 'WHATSAPP_TEST_FAILED',
+      entity: 'NOTIFICATION_JOB',
+      entityId: result.job.id,
+      details: `Manual WhatsApp Cloud API test to ${maskSensitiveIdentifier(result.job.recipient, 4)} -> ${result.job.status}`,
+      ipAddress: req.ip,
+    });
+
+    const [configs, whatsappStatus, notificationJobs] = await Promise.all([
+      db.getSignalAlertConfigsByUserId(user.id),
+      whatsappCloudProvider.getConnectionStatus(user.id),
+      db.getNotificationJobsByUserId(user.id, 40),
+    ]);
+
+    return res.json({
+      success: result.success,
+      job: result.job,
+      error: result.error,
+      configs,
+      whatsappStatus,
+      notificationJobs,
+    });
+  } catch (err: any) {
+    return res.status(400).json({
+      error: whatsappCloudProvider.redactSecrets(err.message || 'WhatsApp test message failed'),
+    });
+  }
+});
+
+apiRouter.post('/alerts/whatsapp/process-queue', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const queueResult = await whatsappCloudProvider.processPendingQueue(10, user.id);
+  const [events, notificationJobs, whatsappStatus] = await Promise.all([
+    db.getSignalLifecycleEvents({ userId: user.id, limit: 50 }),
+    db.getNotificationJobsByUserId(user.id, 40),
+    whatsappCloudProvider.getConnectionStatus(user.id),
+  ]);
+
+  return res.json({
+    queueResult,
+    events,
+    notificationJobs,
+    whatsappStatus,
+  });
+});
+
+// Scheduled Cron Endpoint (Protected by CRON_SECRET for Vercel Cron / External Scheduler)
+const handleAlertCron = async (req: Request, res: Response) => {
+  const cronSecret = (process.env.CRON_SECRET || '').trim();
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const customHeader = String(req.headers['x-cron-secret'] || '').trim();
+
+  if (!cronSecret || (bearerToken !== cronSecret && customHeader !== cronSecret)) {
+    return res.status(401).json({ error: 'Unauthorized: Valid CRON_SECRET required' });
+  }
+
+  const schedulerEnabled = (process.env.ALERT_SCHEDULER_ENABLED || 'false').toLowerCase() === 'true';
+  if (!schedulerEnabled) {
+    return res.status(200).json({
+      ok: false,
+      skipped: true,
+      reason:
+        'Automated alert scheduler is disabled (ALERT_SCHEDULER_ENABLED=false). Keep disabled until all validation gates and manual WhatsApp test succeed.',
+    });
+  }
+
+  const symbol = req.query.symbol ? normalizeSymbol(String(req.query.symbol)) : undefined;
+  const report = await DualStageSignalAlertService.runEvaluationCycle({
+    symbol,
+    triggerSource: 'CRON',
+  });
+
+  return res.json({ ok: true, report });
+};
+
+apiRouter.get('/alerts/cron', handleAlertCron);
+apiRouter.post('/alerts/cron', handleAlertCron);
+
+// Meta WhatsApp Business Cloud API Webhook (Verification & Delivery Receipts)
+apiRouter.get('/webhooks/whatsapp', (req: Request, res: Response) => {
+  const mode = String(req.query['hub.mode'] || '');
+  const token = String(req.query['hub.verify_token'] || '');
+  const challenge = String(req.query['hub.challenge'] || '');
+
+  const check = whatsappCloudProvider.verifyWebhookChallenge(mode, token, challenge);
+  if (check.verified) {
+    return res.status(200).send(check.challenge);
+  }
+  return res.status(403).json({ error: 'Webhook verification failed' });
+});
+
+apiRouter.post('/webhooks/whatsapp', async (req: Request, res: Response) => {
+  const signature = String(req.headers['x-hub-signature-256'] || '');
+  const rawBody = JSON.stringify(req.body || {});
+  if (!whatsappCloudProvider.verifyWebhookSignature(rawBody, signature)) {
+    return res.status(401).json({ error: 'Invalid webhook signature' });
+  }
+  return res.status(200).json({ received: true });
+});
+
