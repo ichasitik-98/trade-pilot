@@ -1733,12 +1733,26 @@ const handleAlertCron = async (req: Request, res: Response) => {
   const authResult = await authenticateSchedulerRequest(req);
 
   if (!authResult.authenticated) {
+    const failureCategory =
+      authResult.category || (authResult.isQStash ? 'invalid_qstash_signature' : 'unauthorized');
+    console.warn(
+      `[SchedulerAudit] event=scheduler_auth_failed category=${failureCategory} status=${authResult.statusCode || 401} method=${req.method}`
+    );
     return res.status(authResult.statusCode || 401).json({
       error: authResult.error || 'Unauthorized: Valid QStash signature or CRON_SECRET required',
     });
   }
 
+  const callerType = authResult.isQStash ? 'QSTASH' : 'INTERNAL_CRON';
+  console.log(`[SchedulerAudit] event=scheduler_auth_success caller=${callerType} method=${req.method}`);
+
   if (authResult.status === 'DISABLED') {
+    const skipReason = authResult.isQStash
+      ? 'external_scheduler_disabled'
+      : 'internal_scheduler_disabled';
+    console.log(
+      `[SchedulerAudit] event=scheduler_skipped reason=${skipReason} caller=${callerType} evaluation_started=false whatsapp_dispatch_started=false`
+    );
     return res.status(200).json({
       ok: false,
       skipped: true,
@@ -1750,6 +1764,9 @@ const handleAlertCron = async (req: Request, res: Response) => {
   const requestedSymbol = req.query.symbol || req.body?.symbol;
   const symbol = requestedSymbol ? normalizeSymbol(String(requestedSymbol)) : 'XAUUSD';
 
+  console.log(
+    `[SchedulerAudit] event=scheduler_evaluation_started caller=${callerType} symbol=${symbol}`
+  );
   const report = await DualStageSignalAlertService.runEvaluationCycle({
     symbol,
     triggerSource: 'CRON',
@@ -1757,7 +1774,7 @@ const handleAlertCron = async (req: Request, res: Response) => {
 
   return res.json({
     ok: true,
-    caller: authResult.isQStash ? 'QSTASH' : 'INTERNAL_CRON',
+    caller: callerType,
     report,
   });
 };

@@ -21,6 +21,7 @@ export interface SchedulerAuthResult {
   isQStash: boolean;
   status: 'AUTHORIZED' | 'UNAUTHORIZED' | 'DISABLED';
   statusCode: number;
+  category?: 'invalid_qstash_signature' | 'missing_or_invalid_cron_secret' | 'unauthorized';
   error?: string;
   reason?: string;
 }
@@ -135,6 +136,7 @@ export async function authenticateSchedulerRequest(req: Request): Promise<Schedu
         isQStash: true,
         status: 'UNAUTHORIZED',
         statusCode: 401,
+        category: 'invalid_qstash_signature',
         error: 'Unauthorized: Invalid QStash signature',
       };
     }
@@ -178,6 +180,7 @@ export async function authenticateSchedulerRequest(req: Request): Promise<Schedu
       isQStash: false,
       status: 'UNAUTHORIZED',
       statusCode: 401,
+      category: 'missing_or_invalid_cron_secret',
       error: 'Unauthorized: Valid CRON_SECRET or QStash signature required',
     };
   }

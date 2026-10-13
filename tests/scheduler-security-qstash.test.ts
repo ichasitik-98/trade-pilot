@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import http from 'http';
 import crypto from 'crypto';
 import express from 'express';
 import { timingSafeCompare, verifyQStashSignature, authenticateSchedulerRequest } from '../server/auth/scheduler-auth.ts';
 import { db } from '../server/db/storage.ts';
 import { DualStageSignalAlertService } from '../server/services/dual-stage-signal-alert.ts';
+import { MarketDataSyncService } from '../server/services/market-data-sync.ts';
 import { whatsappCloudProvider } from '../server/providers/whatsapp-cloud.ts';
 import { apiRouter } from '../server/api/routes.ts';
 
@@ -327,40 +329,172 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
   });
 
   describe('4. Express Endpoint Integration (/api/alerts/cron)', () => {
-    it('returns 401 when called without credentials on app test', async () => {
+    async function invokeCronEndpoint(params: {
+      method?: 'GET' | 'POST';
+      headers?: Record<string, string>;
+      body?: string;
+    }): Promise<{ status: number; body: any }> {
       const app = express();
-      app.use(express.json());
+      app.use(
+        express.json({
+          verify: (req: any, _res: any, buf: Buffer) => {
+            req.rawBody = buf?.toString('utf-8') || '';
+          },
+        })
+      );
       app.use('/api', apiRouter);
 
-      const res = await fetch('http://localhost:3000/api/alerts/cron', {
-        headers: { 'Accept': 'application/json' },
-      }).catch(() => null);
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address() as { port: number };
+      try {
+        const rawBody = params.body;
+        const reqHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(params.headers || {}),
+        };
+        if (rawBody !== undefined) {
+          reqHeaders['Content-Length'] = String(Buffer.byteLength(rawBody));
+        }
 
-      // If local server is running on 3000
-      if (res) {
-        expect(res.status).toBe(401);
-        const data = await res.json();
-        expect(data.error).toContain('Unauthorized');
+        const res = await new Promise<{ status: number; body: any }>((resolve, reject) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: addr.port,
+              path: '/api/alerts/cron',
+              method: params.method || 'POST',
+              headers: reqHeaders,
+            },
+            (resp) => {
+              let data = '';
+              resp.on('data', (c) => (data += c));
+              resp.on('end', () => {
+                try {
+                  resolve({ status: resp.statusCode || 500, body: JSON.parse(data) });
+                } catch {
+                  resolve({ status: resp.statusCode || 500, body: data });
+                }
+              });
+            }
+          );
+          req.on('error', reject);
+          if (rawBody) req.write(rawBody);
+          req.end();
+        });
+        return res;
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
       }
-    });
+    }
 
-    it('rejects invalid signature without invoking signal evaluation or WhatsApp dispatch', async () => {
+    it('returns 401 when called without credentials on ephemeral test server and logs failure without leaking headers', async () => {
+      const spyWarn = vi.spyOn(console, 'warn');
       const spyCycle = vi.spyOn(DualStageSignalAlertService, 'runEvaluationCycle');
+      const spySync = vi.spyOn(MarketDataSyncService, 'syncMarketData');
       const spyWhatsApp = vi.spyOn(whatsappCloudProvider, 'enqueueSignalNotification');
 
-      const mockReq: any = {
-        headers: { 'upstash-signature': 'bad_sig' },
-        body: {},
-        rawBody: '{}',
-        get: () => 'trade-pilot-sage.vercel.app',
-        protocol: 'https',
-        originalUrl: '/api/alerts/cron',
-      };
+      const res = await invokeCronEndpoint({ method: 'POST', body: JSON.stringify({ symbol: 'XAUUSD' }) });
 
-      const auth = await authenticateSchedulerRequest(mockReq);
-      expect(auth.authenticated).toBe(false);
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain('Unauthorized');
+
+      // Gate guarantees: NO evaluation, NO sync, NO WhatsApp
       expect(spyCycle).not.toHaveBeenCalled();
+      expect(spySync).not.toHaveBeenCalled();
       expect(spyWhatsApp).not.toHaveBeenCalled();
+
+      // Observability check: Structured log recorded without secrets
+      const warnCall = spyWarn.mock.calls.find((c) =>
+        c.some((arg) => typeof arg === 'string' && arg.includes('[SchedulerAudit] event=scheduler_auth_failed'))
+      );
+      expect(warnCall).toBeDefined();
+      const warnStr = warnCall?.[0] as string;
+      expect(warnStr).toContain('status=401');
+      expect(warnStr).not.toContain('Bearer');
+      expect(warnStr).not.toContain(testCronSecret);
+    });
+
+    it('rejects invalid signature with 401 without invoking evaluation, market sync, or WhatsApp', async () => {
+      const spyWarn = vi.spyOn(console, 'warn');
+      const spyCycle = vi.spyOn(DualStageSignalAlertService, 'runEvaluationCycle');
+      const spySync = vi.spyOn(MarketDataSyncService, 'syncMarketData');
+      const spyWhatsApp = vi.spyOn(whatsappCloudProvider, 'enqueueSignalNotification');
+
+      const badSig = 'forged_fake_signature_99999999999';
+      const body = JSON.stringify({ symbol: 'XAUUSD' });
+
+      const res = await invokeCronEndpoint({
+        method: 'POST',
+        headers: { 'upstash-signature': badSig },
+        body,
+      });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain('Unauthorized: Invalid QStash signature');
+
+      // Zero execution guarantees
+      expect(spyCycle).not.toHaveBeenCalled();
+      expect(spySync).not.toHaveBeenCalled();
+      expect(spyWhatsApp).not.toHaveBeenCalled();
+
+      // Observability check: Logs invalid signature category without logging the actual signature
+      const warnCall = spyWarn.mock.calls.find((c) =>
+        c.some((arg) => typeof arg === 'string' && arg.includes('[SchedulerAudit] event=scheduler_auth_failed category=invalid_qstash_signature'))
+      );
+      expect(warnCall).toBeDefined();
+      const warnStr = warnCall?.[0] as string;
+      expect(warnStr).not.toContain(badSig);
+    });
+
+    it('when QSTASH_SCHEDULER_ENABLED=false, valid signature returns 200 skipped, logs scheduler_skipped, and guarantees zero side effects', async () => {
+      process.env.QSTASH_SCHEDULER_ENABLED = 'false';
+      const spyLog = vi.spyOn(console, 'log');
+      const spyCycle = vi.spyOn(DualStageSignalAlertService, 'runEvaluationCycle');
+      const spySync = vi.spyOn(MarketDataSyncService, 'syncMarketData');
+      const spyWhatsApp = vi.spyOn(whatsappCloudProvider, 'enqueueSignalNotification');
+      const spyDispatch = vi.spyOn(whatsappCloudProvider, 'dispatchPayloadToMeta');
+
+      const body = JSON.stringify({ symbol: 'XAUUSD' });
+      const signature = generateTestQStashSignature({
+        key: testCurrentKey,
+        body,
+        url: targetUrl,
+      });
+
+      const res = await invokeCronEndpoint({
+        method: 'POST',
+        headers: { 'upstash-signature': signature },
+        body,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.skipped).toBe(true);
+      expect(res.body.reason).toContain('QSTASH_SCHEDULER_ENABLED=false');
+
+      // Zero side effects verified
+      expect(spyCycle).not.toHaveBeenCalled();
+      expect(spySync).not.toHaveBeenCalled();
+      expect(spyWhatsApp).not.toHaveBeenCalled();
+      expect(spyDispatch).not.toHaveBeenCalled();
+
+      // Observability logs verified:
+      // 1. Success log
+      const successCall = spyLog.mock.calls.find((c) =>
+        c.some((arg) => typeof arg === 'string' && arg.includes('[SchedulerAudit] event=scheduler_auth_success caller=QSTASH'))
+      );
+      expect(successCall).toBeDefined();
+      const successStr = successCall?.[0] as string;
+      expect(successStr).not.toContain(signature);
+      expect(successStr).not.toContain(body);
+
+      // 2. Skipped log with required exact parameters
+      const skippedCall = spyLog.mock.calls.find((c) =>
+        c.some((arg) => typeof arg === 'string' && arg.includes('[SchedulerAudit] event=scheduler_skipped reason=external_scheduler_disabled caller=QSTASH evaluation_started=false whatsapp_dispatch_started=false'))
+      );
+      expect(skippedCall).toBeDefined();
     });
   });
 
