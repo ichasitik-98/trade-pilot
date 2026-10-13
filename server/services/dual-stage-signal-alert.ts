@@ -1988,8 +1988,37 @@ export class DualStageSignalAlertService {
 
       const stage1Evaluations: Stage1EvaluationOutcome[] = [];
       for (const cfg of enabledConfigs) {
+        // Maintain confirmation timeframe (e.g. M5) market data freshness for enabled 4-TF configs
+        const cTf = (cfg.confirmationTimeframe || 'M5') as Timeframe;
+        const sym = cfg.symbol.toUpperCase();
+        try {
+          const budgetCheck = twelveDataBudget.canSpendBackgroundCredit(1);
+          if (budgetCheck.allowed) {
+            const stored = await db.getCandles({ symbol: sym, timeframe: cTf, limit: 10 });
+            const freshness = this.checkCandleSliceFreshness(stored, cTf, sym);
+            if (freshness.isStale) {
+              await MarketDataSyncService.syncMarketData({
+                symbol: sym,
+                timeframe: cTf,
+                count: 250,
+              });
+            }
+          }
+        } catch (syncErr: any) {
+          console.warn(
+            `[DualStageSignalAlertService] Optional confirmation timeframe sync warning for ${sym} [${cTf}]:`,
+            syncErr.message
+          );
+        }
+
         const s1 = await this.evaluateStage1ForConfig(cfg);
         stage1Evaluations.push(s1);
+
+        // Immediate Stage 2 evaluation when a new initial setup is detected and created
+        if (s1.createdNewEvent && s1.signalEvent) {
+          const s2 = await this.evaluateStage2Confirmation(s1.signalEvent, cfg);
+          stage2Evaluations.push(s2);
+        }
       }
 
       // 3. Process due pending/retry-scheduled WhatsApp notification jobs (scoped by userId when provided)

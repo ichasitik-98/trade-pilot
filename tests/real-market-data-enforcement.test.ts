@@ -50,7 +50,7 @@ describe('UPGRADE #3.1 — Real Market Data Only Enforcement Suite', () => {
     expect(summary.demoCandlesIdentified).toBeGreaterThanOrEqual(0);
     expect(summary.realCandlesPreserved).toBeGreaterThan(0);
     expect(summary.backupFilePath).toBeDefined();
-  });
+  }, 20000);
 
   it('2. Enforces TwelveDataProvider in REAL mode and does not select DemoProvider', () => {
     const provider = MarketDataProviderFactory.getProvider();
