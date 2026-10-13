@@ -675,6 +675,7 @@ describe('TradePilot Post-Upgrade Validation Audit — 12 Mandatory Verification
   }, 30000);
 
   it('10. Pengujian Wajib #10: WhatsApp failure, ambiguous timeout (no retry), manual test prerequisite, template payload, and successful delivery', async () => {
+    process.env.WHATSAPP_SAFE_TEST_MODE = 'false';
     process.env.WHATSAPP_ENABLED = 'true';
     process.env.WHATSAPP_PHONE_NUMBER_ID = '123456789012345';
     process.env.WHATSAPP_ACCESS_TOKEN = 'EAAB_SUPER_SECRET_META_TOKEN_999';

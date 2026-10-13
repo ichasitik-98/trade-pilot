@@ -15,7 +15,14 @@ async function startServer() {
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   const isProduction = process.env.NODE_ENV === 'production';
 
-  app.use(express.json({ limit: '10mb' }));
+  app.use(
+    express.json({
+      limit: '10mb',
+      verify: (req: any, _res: any, buf: Buffer) => {
+        req.rawBody = buf?.toString('utf-8') || '';
+      },
+    })
+  );
   app.use(express.urlencoded({ extended: true }));
 
   // Warm up persistent database asynchronously so port 3000 binds immediately

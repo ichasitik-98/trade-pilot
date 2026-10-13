@@ -2052,71 +2052,88 @@ export class DatabaseStore {
       return mapSignalLifecycleEvent(existing);
     }
 
-    const created = await prisma.signalLifecycleEvent.create({
-      data: {
-        id: event.id || crypto.randomUUID(),
-        userId: event.userId,
-        configId: event.configId || null,
-        signalRunId: event.signalRunId || null,
-        idempotencyKey: event.idempotencyKey,
-        confirmationIdempotencyKey: event.confirmationIdempotencyKey || null,
-        symbol: event.symbol.toUpperCase().replace(/[\/\_\-\.]/g, ''),
-        direction: event.direction === 'SELL' ? 'SELL' : 'BUY',
-        htfDirectionTimeframe: (event.htfDirectionTimeframe || 'H4').toUpperCase(),
-        htfConfirmationTimeframe: (event.htfConfirmationTimeframe || 'H1').toUpperCase(),
-        primaryTimeframe: event.primaryTimeframe.toUpperCase(),
-        confirmationTimeframe: event.confirmationTimeframe.toUpperCase(),
-        h4Direction: event.h4Direction || null,
-        h1Trend: event.h1Trend || null,
-        m15PullbackValid: Boolean(event.m15PullbackValid),
-        m15PullbackReason: event.m15PullbackReason || null,
-        m5BosDetected: Boolean(event.m5BosDetected),
-        m5CandleConfirmed: Boolean(event.m5CandleConfirmed),
-        primaryCandleTimestamp: new Date(event.primaryCandleTimestamp),
-        isClosedCandle: event.isClosedCandle,
-        referencePrice: event.referencePrice,
-        entryPrice: event.entryPrice,
-        stopLoss: event.stopLoss,
-        takeProfit1: event.takeProfit1,
-        takeProfit2: event.takeProfit2 ?? null,
-        riskReward: event.riskReward,
-        initialScore: event.initialScore,
-        initialStatus: event.initialStatus,
-        lifecycleStatus: event.lifecycleStatus,
-        initialNotificationStatus: event.initialNotificationStatus || 'NOT_QUEUED',
-        confirmationNotificationStatus: event.confirmationNotificationStatus || 'NOT_QUEUED',
-        dataFreshnessStatus: event.dataFreshnessStatus || 'CURRENT',
-        initialExplanation: event.initialExplanation,
-        expiresAt: new Date(event.expiresAt),
-        lastEvaluatedAt: event.lastEvaluatedAt ? new Date(event.lastEvaluatedAt) : new Date(),
-        evaluationCount: event.evaluationCount ?? 1,
-        ...(initialEval
-          ? {
-              evaluations: {
-                create: {
-                  stage: initialEval.stage,
-                  timeframe: initialEval.timeframe,
-                  candleTimestamp: initialEval.candleTimestamp ? new Date(initialEval.candleTimestamp) : null,
-                  evaluatedPrice: initialEval.evaluatedPrice ?? null,
-                  score: initialEval.score ?? null,
-                  resultStatus: initialEval.resultStatus,
-                  satisfiedRules: initialEval.satisfiedRules || [],
-                  failedRules: initialEval.failedRules || [],
-                  reason: initialEval.reason,
-                  dataFreshness: initialEval.dataFreshness || 'CURRENT',
+    try {
+      const created = await prisma.signalLifecycleEvent.create({
+        data: {
+          id: event.id || crypto.randomUUID(),
+          userId: event.userId,
+          configId: event.configId || null,
+          signalRunId: event.signalRunId || null,
+          idempotencyKey: event.idempotencyKey,
+          confirmationIdempotencyKey: event.confirmationIdempotencyKey || null,
+          symbol: event.symbol.toUpperCase().replace(/[\/\_\-\.]/g, ''),
+          direction: event.direction === 'SELL' ? 'SELL' : 'BUY',
+          htfDirectionTimeframe: (event.htfDirectionTimeframe || 'H4').toUpperCase(),
+          htfConfirmationTimeframe: (event.htfConfirmationTimeframe || 'H1').toUpperCase(),
+          primaryTimeframe: event.primaryTimeframe.toUpperCase(),
+          confirmationTimeframe: event.confirmationTimeframe.toUpperCase(),
+          h4Direction: event.h4Direction || null,
+          h1Trend: event.h1Trend || null,
+          m15PullbackValid: Boolean(event.m15PullbackValid),
+          m15PullbackReason: event.m15PullbackReason || null,
+          m5BosDetected: Boolean(event.m5BosDetected),
+          m5CandleConfirmed: Boolean(event.m5CandleConfirmed),
+          primaryCandleTimestamp: new Date(event.primaryCandleTimestamp),
+          isClosedCandle: event.isClosedCandle,
+          referencePrice: event.referencePrice,
+          entryPrice: event.entryPrice,
+          stopLoss: event.stopLoss,
+          takeProfit1: event.takeProfit1,
+          takeProfit2: event.takeProfit2 ?? null,
+          riskReward: event.riskReward,
+          initialScore: event.initialScore,
+          initialStatus: event.initialStatus,
+          lifecycleStatus: event.lifecycleStatus,
+          initialNotificationStatus: event.initialNotificationStatus || 'NOT_QUEUED',
+          confirmationNotificationStatus: event.confirmationNotificationStatus || 'NOT_QUEUED',
+          dataFreshnessStatus: event.dataFreshnessStatus || 'CURRENT',
+          initialExplanation: event.initialExplanation,
+          expiresAt: new Date(event.expiresAt),
+          lastEvaluatedAt: event.lastEvaluatedAt ? new Date(event.lastEvaluatedAt) : new Date(),
+          evaluationCount: event.evaluationCount ?? 1,
+          ...(initialEval
+            ? {
+                evaluations: {
+                  create: {
+                    stage: initialEval.stage,
+                    timeframe: initialEval.timeframe,
+                    candleTimestamp: initialEval.candleTimestamp ? new Date(initialEval.candleTimestamp) : null,
+                    evaluatedPrice: initialEval.evaluatedPrice ?? null,
+                    score: initialEval.score ?? null,
+                    resultStatus: initialEval.resultStatus,
+                    satisfiedRules: initialEval.satisfiedRules || [],
+                    failedRules: initialEval.failedRules || [],
+                    reason: initialEval.reason,
+                    dataFreshness: initialEval.dataFreshness || 'CURRENT',
+                  },
                 },
-              },
-            }
-          : {}),
-      },
-      include: {
-        evaluations: {
-          orderBy: { evaluatedAt: 'asc' },
+              }
+            : {}),
         },
-      },
-    });
+        include: {
+          evaluations: {
+            orderBy: { evaluatedAt: 'asc' },
+          },
+        },
+      });
 
-    return mapSignalLifecycleEvent(created);
+      return mapSignalLifecycleEvent(created);
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const raceExisting = await prisma.signalLifecycleEvent.findUnique({
+          where: { idempotencyKey: event.idempotencyKey },
+          include: {
+            evaluations: {
+              orderBy: { evaluatedAt: 'asc' },
+            },
+          },
+        });
+        if (raceExisting) {
+          return mapSignalLifecycleEvent(raceExisting);
+        }
+      }
+      throw err;
+    }
   }
 
   public async updateSignalLifecycleEvent(
@@ -2182,17 +2199,34 @@ export class DatabaseStore {
       };
     }
 
-    const updated = await prisma.signalLifecycleEvent.update({
-      where: { id },
-      data,
-      include: {
-        evaluations: {
-          orderBy: { evaluatedAt: 'asc' },
+    try {
+      const updated = await prisma.signalLifecycleEvent.update({
+        where: { id },
+        data,
+        include: {
+          evaluations: {
+            orderBy: { evaluatedAt: 'asc' },
+          },
         },
-      },
-    });
+      });
 
-    return mapSignalLifecycleEvent(updated);
+      return mapSignalLifecycleEvent(updated);
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const raceExisting = await prisma.signalLifecycleEvent.findUnique({
+          where: { id },
+          include: {
+            evaluations: {
+              orderBy: { evaluatedAt: 'asc' },
+            },
+          },
+        });
+        if (raceExisting) {
+          return mapSignalLifecycleEvent(raceExisting);
+        }
+      }
+      throw err;
+    }
   }
 
   // ----------------------------------------------------
@@ -2222,27 +2256,40 @@ export class DatabaseStore {
       return mapNotificationJob(existing);
     }
 
-    const created = await prisma.notificationJob.create({
-      data: {
-        id: job.id || crypto.randomUUID(),
-        userId: job.userId,
-        signalEventId: job.signalEventId || null,
-        notificationType: job.notificationType,
-        idempotencyKey: job.idempotencyKey,
-        channel: job.channel || 'WHATSAPP',
-        recipient: job.recipient,
-        payloadJson: job.payloadJson as any,
-        messageBody: job.messageBody,
-        status: job.status || 'PENDING',
-        attemptCount: job.attemptCount ?? 0,
-        maxAttempts: job.maxAttempts ?? 3,
-        nextRetryAt: job.nextRetryAt ? new Date(job.nextRetryAt) : new Date(),
-        isAmbiguousTimeout: job.isAmbiguousTimeout ?? false,
-      },
-      include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
-    });
+    try {
+      const created = await prisma.notificationJob.create({
+        data: {
+          id: job.id || crypto.randomUUID(),
+          userId: job.userId,
+          signalEventId: job.signalEventId || null,
+          notificationType: job.notificationType,
+          idempotencyKey: job.idempotencyKey,
+          channel: job.channel || 'WHATSAPP',
+          recipient: job.recipient,
+          payloadJson: job.payloadJson as any,
+          messageBody: job.messageBody,
+          status: job.status || 'PENDING',
+          attemptCount: job.attemptCount ?? 0,
+          maxAttempts: job.maxAttempts ?? 3,
+          nextRetryAt: job.nextRetryAt ? new Date(job.nextRetryAt) : new Date(),
+          isAmbiguousTimeout: job.isAmbiguousTimeout ?? false,
+        },
+        include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+      });
 
-    return mapNotificationJob(created);
+      return mapNotificationJob(created);
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        const raceExisting = await prisma.notificationJob.findUnique({
+          where: { idempotencyKey: job.idempotencyKey },
+          include: { attempts: { orderBy: { attemptNumber: 'asc' } } },
+        });
+        if (raceExisting) {
+          return mapNotificationJob(raceExisting);
+        }
+      }
+      throw err;
+    }
   }
 
   public async getPendingNotificationJobs(limit: number = 15, userId?: string): Promise<NotificationJob[]> {

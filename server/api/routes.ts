@@ -43,6 +43,7 @@ import { DualStageSignalAlertService } from '../services/dual-stage-signal-alert
 import { twelveDataBudget } from '../services/twelve-data-budget.ts';
 import { whatsappCloudProvider, maskSensitiveIdentifier } from '../providers/whatsapp-cloud.ts';
 import { parseToUtcTimestamp } from '../utils/timezone.ts';
+import { authenticateSchedulerRequest } from '../auth/scheduler-auth.ts';
 import { Trade, TradeDirection, TradeStatus, Timeframe, TIMEFRAMES } from '../types/index.ts';
 
 export const apiRouter = Router();
@@ -1727,34 +1728,38 @@ apiRouter.post('/alerts/whatsapp/process-queue', authenticate, async (req: Reque
   });
 });
 
-// Scheduled Cron Endpoint (Protected by CRON_SECRET for Vercel Cron / External Scheduler)
+// Scheduled Cron Endpoint (Protected by Upstash QStash Signature & Internal CRON_SECRET)
 const handleAlertCron = async (req: Request, res: Response) => {
-  const cronSecret = (process.env.CRON_SECRET || '').trim();
-  const authHeader = req.headers.authorization;
-  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  const customHeader = String(req.headers['x-cron-secret'] || '').trim();
+  const authResult = await authenticateSchedulerRequest(req);
 
-  if (!cronSecret || (bearerToken !== cronSecret && customHeader !== cronSecret)) {
-    return res.status(401).json({ error: 'Unauthorized: Valid CRON_SECRET required' });
-  }
-
-  const schedulerEnabled = (process.env.ALERT_SCHEDULER_ENABLED || 'false').toLowerCase() === 'true';
-  if (!schedulerEnabled) {
-    return res.status(200).json({
-      ok: false,
-      skipped: true,
-      reason:
-        'Automated alert scheduler is disabled (ALERT_SCHEDULER_ENABLED=false). Keep disabled until all validation gates and manual WhatsApp test succeed.',
+  if (!authResult.authenticated) {
+    return res.status(authResult.statusCode || 401).json({
+      error: authResult.error || 'Unauthorized: Valid QStash signature or CRON_SECRET required',
     });
   }
 
-  const symbol = req.query.symbol ? normalizeSymbol(String(req.query.symbol)) : undefined;
+  if (authResult.status === 'DISABLED') {
+    return res.status(200).json({
+      ok: false,
+      skipped: true,
+      reason: authResult.reason,
+    });
+  }
+
+  // Initial symbol scope is restricted to XAUUSD by default, while respecting explicit param
+  const requestedSymbol = req.query.symbol || req.body?.symbol;
+  const symbol = requestedSymbol ? normalizeSymbol(String(requestedSymbol)) : 'XAUUSD';
+
   const report = await DualStageSignalAlertService.runEvaluationCycle({
     symbol,
     triggerSource: 'CRON',
   });
 
-  return res.json({ ok: true, report });
+  return res.json({
+    ok: true,
+    caller: authResult.isQStash ? 'QSTASH' : 'INTERNAL_CRON',
+    report,
+  });
 };
 
 apiRouter.get('/alerts/cron', handleAlertCron);

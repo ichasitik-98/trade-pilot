@@ -344,6 +344,24 @@ export class WhatsAppCloudProvider {
     const startMs = Date.now();
     const env = this.getEnvConfig();
 
+    // Safe Test Mode Guard: Completely intercepts HTTP calls to Meta Graph API
+    const isSafeTestMode =
+      (process.env.WHATSAPP_SAFE_TEST_MODE || 'false').toLowerCase() === 'true';
+
+    if (isSafeTestMode) {
+      return {
+        success: true,
+        status: 'SENT',
+        httpStatus: 200,
+        providerMessageId: `wamid.SIMULATED_TEST_${crypto.randomUUID().slice(0, 8)}`,
+        sanitizedResponse:
+          'Safe test mode active: WhatsApp message dispatch simulated successfully without calling Meta Graph API.',
+        durationMs: Date.now() - startMs,
+        isRetryable: false,
+        isAmbiguousTimeout: false,
+      };
+    }
+
     if (!env.enabled) {
       return {
         success: false,

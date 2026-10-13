@@ -7,7 +7,14 @@ dotenv.config();
 
 const app = express();
 
-app.use(express.json({ limit: '10mb' }));
+app.use(
+  express.json({
+    limit: '10mb',
+    verify: (req: any, _res: any, buf: Buffer) => {
+      req.rawBody = buf?.toString('utf-8') || '';
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 let isDbInitialized = false;
