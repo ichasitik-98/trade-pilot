@@ -84,6 +84,48 @@ export async function main() {
     },
   });
 
+  // 2b. Seed Admin User
+  console.log('[Prisma Seed] Ensuring admin user...');
+  const adminSalt = await bcrypt.genSalt(10);
+  const adminPasswordHash = await bcrypt.hash('AdminPilot2026!', adminSalt);
+
+  const adminUser = await prisma.user.upsert({
+    where: { email: 'admin@tradepilot.io' },
+    update: {
+      name: 'TradePilot Admin',
+      role: Role.ADMIN,
+    },
+    create: {
+      id: 'usr_admin_master',
+      email: 'admin@tradepilot.io',
+      name: 'TradePilot Admin',
+      passwordHash: adminPasswordHash,
+      role: Role.ADMIN,
+    },
+  });
+
+  await prisma.tradingAccount.upsert({
+    where: { id: 'acc_admin_main' },
+    update: {
+      name: 'Admin Primary Account',
+      broker: 'Institutional Liquidity',
+      balance: 100000.0,
+      equity: 100000.0,
+      isDefault: true,
+    },
+    create: {
+      id: 'acc_admin_main',
+      userId: adminUser.id,
+      name: 'Admin Primary Account',
+      broker: 'Institutional Liquidity',
+      accountNumber: 'TP-ADM-001',
+      currency: 'USD',
+      balance: 100000.0,
+      equity: 100000.0,
+      isDefault: true,
+    },
+  });
+
   // 3. Seed Primary Trading Account & Risk Setting
   const demoAccount = await prisma.tradingAccount.upsert({
     where: { id: 'acc_demo_main' },

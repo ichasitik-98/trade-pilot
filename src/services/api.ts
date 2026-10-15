@@ -403,5 +403,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+
+  syncMarketData: (params: { symbol: string; timeframe: string; count?: number }) =>
+    request<{
+      success: boolean;
+      summary: {
+        provider: string;
+        symbol: string;
+        timeframe: string;
+        receivedCandles: number;
+        insertedCandles: number;
+        updatedCandles: number;
+        rejectedCandles: number;
+        latestTimestamp: string | null;
+        freshness: { isStale: boolean; ageSeconds: number };
+        status: string;
+        dataQuality: number;
+        durationMs: number;
+      };
+    }>('/market-data/sync', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
 };
 

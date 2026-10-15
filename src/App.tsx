@@ -19,6 +19,7 @@ import { RiskManagerPage } from './pages/RiskManagerPage.tsx';
 import { AiAnalystPage } from './pages/AiAnalystPage.tsx';
 import { SettingsPage } from './pages/SettingsPage.tsx';
 import { SignalAlertsPage } from './pages/SignalAlertsPage.tsx';
+import { AdminWarmUpPage } from './pages/AdminWarmUpPage.tsx';
 import { AuthPage } from './pages/AuthPage.tsx';
 
 export default function App() {
@@ -164,7 +165,11 @@ export default function App() {
 
       <div className="flex-1 flex overflow-hidden">
         {/* Desktop Sidebar */}
-        <Sidebar currentTab={currentTab} onTabChange={(tab) => setCurrentTab(tab)} />
+        <Sidebar
+          currentTab={currentTab}
+          onTabChange={(tab) => setCurrentTab(tab)}
+          isAdmin={user?.role === 'ADMIN'}
+        />
 
         {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto pb-20 md:pb-6">
@@ -214,6 +219,13 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'admin-warmup' && (
+            <AdminWarmUpPage
+              user={user}
+              onNavigateToAlerts={() => setCurrentTab('signal-alerts')}
+            />
+          )}
+
           {currentTab === 'watchlist' && (
             <WatchlistPage onSelectPairForAnalysis={(pair) => handleSelectPairForTerminal(pair)} />
           )}
@@ -228,13 +240,18 @@ export default function App() {
               accounts={accounts}
               onRefreshAccounts={() => initApp()}
               onNavigateToAlerts={() => setCurrentTab('signal-alerts')}
+              onNavigateToWarmUp={() => setCurrentTab('admin-warmup')}
             />
           )}
         </main>
       </div>
 
       {/* Mobile Bottom Navigation */}
-      <MobileNav currentTab={currentTab} onTabChange={(tab) => setCurrentTab(tab)} />
+      <MobileNav
+        currentTab={currentTab}
+        onTabChange={(tab) => setCurrentTab(tab)}
+        isAdmin={user?.role === 'ADMIN'}
+      />
 
       {/* Trade Modal */}
       {showTradeModal && (

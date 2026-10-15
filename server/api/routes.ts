@@ -738,19 +738,90 @@ apiRouter.get('/market-data/status', authenticate, async (req: Request, res: Res
   return res.json({ statuses });
 });
 
-apiRouter.post('/market-data/sync', authenticate, async (req: Request, res: Response) => {
-  try {
-    const { symbol = 'EURUSD', timeframe = 'H1', from, to, count } = req.body;
-    const sym = normalizeSymbol(symbol);
-    const tf = parseTimeframe(timeframe);
+// Concurrency mutex and rate limiter for manual admin market data synchronization
+let isManualSyncRunning = false;
+let lastManualSyncCompletedAt = 0;
+const MIN_MANUAL_SYNC_INTERVAL_MS = 5000;
 
+export function resetManualSyncCooldownForTesting(): void {
+  isManualSyncRunning = false;
+  lastManualSyncCompletedAt = 0;
+}
+
+apiRouter.post('/market-data/sync', authenticate, async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (!user || user.role !== 'ADMIN') {
+    return res.status(403).json({
+      success: false,
+      error: 'Forbidden: Admin role required for market data synchronization',
+    });
+  }
+
+  const rawSymbol = req.body?.symbol;
+  const rawTimeframe = req.body?.timeframe;
+  const rawCount = req.body?.count;
+
+  if (!rawSymbol || typeof rawSymbol !== 'string' || !rawSymbol.trim()) {
+    return res.status(400).json({ success: false, error: 'Valid symbol is required' });
+  }
+
+  const sym = normalizeSymbol(rawSymbol);
+  const supportedTimeframes: string[] = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', '1M', '5M', '15M', '30M', '1H', '4H', '1D', '1W'];
+  const rawTfUpper = (rawTimeframe || '').toUpperCase().trim();
+  if (!rawTfUpper || !supportedTimeframes.includes(rawTfUpper)) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid timeframe '${rawTimeframe}'. Supported: M1, M5, M15, M30, H1, H4, D1, W1`,
+    });
+  }
+  const tf = parseTimeframe(rawTfUpper);
+
+  const count = rawCount !== undefined ? Number(rawCount) : 250;
+  if (!Number.isInteger(count) || count < 10 || count > 5000) {
+    return res.status(400).json({
+      success: false,
+      error: 'Count must be an integer between 10 and 5000',
+    });
+  }
+
+  if (isManualSyncRunning) {
+    return res.status(409).json({
+      success: false,
+      error: 'A market data synchronization is currently in progress. Please wait for it to complete.',
+    });
+  }
+
+  const timeSinceLastSync = Date.now() - lastManualSyncCompletedAt;
+  if (timeSinceLastSync < MIN_MANUAL_SYNC_INTERVAL_MS) {
+    const waitSeconds = Math.ceil((MIN_MANUAL_SYNC_INTERVAL_MS - timeSinceLastSync) / 1000);
+    return res.status(429).json({
+      success: false,
+      error: `Rate limit: Please wait at least 5 seconds between sync requests. Cooldown: ${waitSeconds}s remaining.`,
+      retryAfterSeconds: waitSeconds,
+    });
+  }
+
+  isManualSyncRunning = true;
+  try {
     const summary = await MarketDataSyncService.syncMarketData({
       symbol: sym,
       timeframe: tf,
-      from,
-      to,
-      count: count ? Number(count) : undefined,
+      from: req.body?.from,
+      to: req.body?.to,
+      count,
     });
+
+    try {
+      await db.addAuditLog({
+        userId: user.id,
+        action: 'MARKET_DATA_WARMUP_SYNC',
+        entity: 'MARKET_DATA',
+        details: `Admin warm-up sync for ${sym} [${tf}]: ${summary.receivedCandles} received, ${summary.insertedCandles} inserted, status: ${summary.status}`,
+        ipAddress: req.ip,
+      });
+    } catch (auditErr: any) {
+      console.warn('[MarketData Sync API] Audit log write warning (non-fatal):', auditErr?.message || auditErr);
+    }
 
     return res.json({ success: true, summary });
   } catch (err: any) {
@@ -758,9 +829,12 @@ apiRouter.post('/market-data/sync', authenticate, async (req: Request, res: Resp
     const status = err.statusCode || 500;
     return res.status(status).json({
       success: false,
-      error: err.message,
+      error: whatsappCloudProvider.redactSecrets(err.message || 'Market data synchronization failed'),
       code: err.code || 'TWELVEDATA_NETWORK_ERROR',
     });
+  } finally {
+    isManualSyncRunning = false;
+    lastManualSyncCompletedAt = Date.now();
   }
 });
 
@@ -1760,9 +1834,23 @@ const handleAlertCron = async (req: Request, res: Response) => {
     });
   }
 
-  // Initial symbol scope is restricted to XAUUSD by default, while respecting explicit param
-  const requestedSymbol = req.query.symbol || req.body?.symbol;
-  const symbol = requestedSymbol ? normalizeSymbol(String(requestedSymbol)) : 'XAUUSD';
+  // Strict symbol lockdown: Automated cron is strictly locked to XAUUSD
+  const rawRequestedSymbol = req.query.symbol || req.body?.symbol;
+  const requestedSymbol = rawRequestedSymbol ? normalizeSymbol(String(rawRequestedSymbol)) : 'XAUUSD';
+
+  if (requestedSymbol !== 'XAUUSD') {
+    console.warn(
+      `[SchedulerAudit] event=scheduler_symbol_rejected symbol=${requestedSymbol} reason=only_xauusd_supported_for_cron evaluation_started=false`
+    );
+    return res.status(400).json({
+      ok: false,
+      skipped: true,
+      error: `Automated scheduler cron is strictly restricted to XAUUSD. Requested symbol '${requestedSymbol}' is rejected.`,
+      symbol: requestedSymbol,
+    });
+  }
+
+  const symbol = 'XAUUSD';
 
   console.log(
     `[SchedulerAudit] event=scheduler_evaluation_started caller=${callerType} symbol=${symbol}`
@@ -1771,6 +1859,22 @@ const handleAlertCron = async (req: Request, res: Response) => {
     symbol,
     triggerSource: 'CRON',
   });
+
+  if (
+    report.skippedReason === 'DISTRIBUTED_LOCK_ACTIVE' ||
+    report.skippedReason === 'IN_MEMORY_CONCURRENCY_LOCKED'
+  ) {
+    console.log(
+      `[SchedulerAudit] event=scheduler_skipped reason=concurrent_evaluation_locked caller=${callerType} evaluation_started=false whatsapp_dispatch_started=false`
+    );
+    return res.status(200).json({
+      ok: false,
+      skipped: true,
+      reason: report.skippedReason,
+      caller: callerType,
+      report,
+    });
+  }
 
   return res.json({
     ok: true,

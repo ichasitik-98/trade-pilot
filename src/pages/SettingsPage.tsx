@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api.ts';
 import { User, TradingAccount, AuditLog } from '../types.ts';
-import { Settings, User as UserIcon, Plus, ShieldCheck, History, Check, Bell, ArrowRight } from 'lucide-react';
+import { Settings, User as UserIcon, Plus, ShieldCheck, History, Check, Bell, ArrowRight, Database } from 'lucide-react';
 
 interface SettingsPageProps {
   user: User;
   accounts: TradingAccount[];
   onRefreshAccounts: () => void;
   onNavigateToAlerts?: () => void;
+  onNavigateToWarmUp?: () => void;
 }
 
-export function SettingsPage({ user, accounts, onRefreshAccounts, onNavigateToAlerts }: SettingsPageProps) {
+export function SettingsPage({ user, accounts, onRefreshAccounts, onNavigateToAlerts, onNavigateToWarmUp }: SettingsPageProps) {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountBroker, setNewAccountBroker] = useState('');
@@ -86,6 +87,24 @@ export function SettingsPage({ user, accounts, onRefreshAccounts, onNavigateToAl
             </span>
           </div>
         </div>
+
+        {user.role === 'ADMIN' && onNavigateToWarmUp && (
+          <div className="pt-3 border-t border-zinc-800 flex items-center justify-between">
+            <div className="text-xs text-zinc-400">
+              <span className="font-semibold text-zinc-300">Administrator Tools: </span>
+              <span>Pre-populate Neon PostgreSQL cache with real Twelve Data market candles.</span>
+            </div>
+            <button
+              type="button"
+              onClick={onNavigateToWarmUp}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 text-xs font-semibold transition cursor-pointer shrink-0"
+            >
+              <Database className="w-3.5 h-3.5 text-amber-400" />
+              <span>Market Warm-Up Panel</span>
+              <ArrowRight className="w-3 h-3 text-amber-400" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Multiple Trading Accounts */}

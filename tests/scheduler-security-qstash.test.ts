@@ -728,4 +728,179 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
       expect(h1Eval.reason).toContain('opposes or fails to confirm');
     });
   });
+
+  describe('8. Upgrade #SCHEDULER-RELIABILITY (Symbol Scope, Distributed Lock & Safe Recovery)', () => {
+    it('strictly rejects non-XAUUSD symbols (e.g. BTCUSD) with 400 Bad Request on /api/alerts/cron', async () => {
+      process.env.ALERT_SCHEDULER_ENABLED = 'true';
+      const testSecret = 'reliability-secret-xyz';
+      process.env.CRON_SECRET = testSecret;
+
+      // Invoke ephemeral express app
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address() as { port: number };
+
+      try {
+        const payload = JSON.stringify({ symbol: 'BTCUSD' });
+        const res = await new Promise<{ status: number; body: any }>((resolve) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: addr.port,
+              path: '/api/alerts/cron',
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': String(Buffer.byteLength(payload)),
+                Authorization: `Bearer ${testSecret}`,
+              },
+            },
+            (resp) => {
+              let data = '';
+              resp.on('data', (c) => (data += c));
+              resp.on('end', () => {
+                try {
+                  resolve({ status: resp.statusCode || 500, body: JSON.parse(data) });
+                } catch {
+                  resolve({ status: resp.statusCode || 500, body: data });
+                }
+              });
+            }
+          );
+          req.write(payload);
+          req.end();
+        });
+
+        expect(res.status).toBe(400);
+        expect(res.body.ok).toBe(false);
+        expect(res.body.skipped).toBe(true);
+        expect(res.body.error).toContain('strictly restricted to XAUUSD');
+        expect(res.body.symbol).toBe('BTCUSD');
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        process.env.ALERT_SCHEDULER_ENABLED = 'false';
+      }
+    });
+
+    it('database-backed atomic distributed lock allows only 1 active instance and rejects concurrent claims', async () => {
+      const lockKey = `TEST_RELIABILITY_${Date.now()}`;
+      const procA = 'instance_A';
+      const procB = 'instance_B';
+
+      // 1. Process A claims lock
+      const claimA = await db.acquireDistributedLock({
+        lockKey,
+        lockId: procA,
+        leaseSeconds: 30,
+      });
+      expect(claimA.acquired).toBe(true);
+      expect(claimA.lockKey).toBe(lockKey);
+
+      // 2. Process B attempts concurrent claim -> must be rejected
+      const claimB = await db.acquireDistributedLock({
+        lockKey,
+        lockId: procB,
+        leaseSeconds: 30,
+      });
+      expect(claimB.acquired).toBe(false);
+      expect(claimB.reason).toContain('Active distributed lock');
+
+      // 3. Process A safely releases lock
+      const releasedA = await db.releaseDistributedLock({
+        lockKey,
+        lockId: procA,
+      });
+      expect(releasedA).toBe(true);
+
+      // 4. Process B can now acquire lock
+      const claimBSecond = await db.acquireDistributedLock({
+        lockKey,
+        lockId: procB,
+        leaseSeconds: 30,
+      });
+      expect(claimBSecond.acquired).toBe(true);
+
+      // Cleanup
+      await db.releaseDistributedLock({ lockKey, lockId: procB });
+    }, 15000);
+
+    it('distributed lock automatically recovers after lease expiry to prevent permanent deadlock', async () => {
+      const lockKey = `TEST_EXPIRY_${Date.now()}`;
+      const deadProc = 'crashed_instance_1';
+      const newProc = 'healthy_instance_2';
+
+      // 1. First instance acquires with short 1-second lease and simulated crash (no release)
+      const claimInitial = await db.acquireDistributedLock({
+        lockKey,
+        lockId: deadProc,
+        leaseSeconds: 1, // 1-second lease
+      });
+      expect(claimInitial.acquired).toBe(true);
+
+      // Immediately checking should be locked
+      const immediateClaim = await db.acquireDistributedLock({
+        lockKey,
+        lockId: newProc,
+        leaseSeconds: 10,
+      });
+      expect(immediateClaim.acquired).toBe(false);
+
+      // 2. Wait 1.2s for lease to expire
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      // 3. New instance acquires the expired lock without manual release
+      const recoveredClaim = await db.acquireDistributedLock({
+        lockKey,
+        lockId: newProc,
+        leaseSeconds: 10,
+      });
+      expect(recoveredClaim.acquired).toBe(true);
+
+      // Cleanup
+      await db.releaseDistributedLock({ lockKey, lockId: newProc });
+    }, 15000);
+
+    it('runEvaluationCycle skips cleanly without fetching or evaluations when distributed lock is active', async () => {
+      const lockKey = 'EVAL_XAUUSD';
+      const foreignLockId = `external_holder_${Date.now()}`;
+
+      // Acquire lock on behalf of another instance
+      const preLock = await db.acquireDistributedLock({
+        lockKey,
+        lockId: foreignLockId,
+        leaseSeconds: 30,
+      });
+      expect(preLock.acquired).toBe(true);
+
+      try {
+        const report = await DualStageSignalAlertService.runEvaluationCycle({
+          symbol: 'XAUUSD',
+          triggerSource: 'CRON',
+        });
+
+        expect(report.skippedReason).toBe('DISTRIBUTED_LOCK_ACTIVE');
+        expect(report.stage1Evaluations).toHaveLength(0);
+        expect(report.stage2Evaluations).toHaveLength(0);
+        expect(report.queueSummary.processedCount).toBe(0);
+      } finally {
+        await db.releaseDistributedLock({ lockKey, lockId: foreignLockId });
+      }
+    }, 15000);
+
+    it('ensures production feature flags remain strictly false by default', () => {
+      const qstashEnabled = (process.env.QSTASH_SCHEDULER_ENABLED || 'false').toLowerCase() === 'true';
+      const alertSchedulerEnabled = (process.env.ALERT_SCHEDULER_ENABLED || 'false').toLowerCase() === 'true';
+      const whatsappEnabled = (process.env.WHATSAPP_ENABLED || 'false').toLowerCase() === 'true';
+      const safeTestMode = (process.env.WHATSAPP_SAFE_TEST_MODE || 'true').toLowerCase() === 'true';
+
+      expect(qstashEnabled).toBe(false);
+      expect(alertSchedulerEnabled).toBe(false);
+      expect(whatsappEnabled).toBe(false);
+      expect(safeTestMode).toBe(true);
+    });
+  });
 });

@@ -170,7 +170,7 @@ export class TwelveDataProvider implements MarketDataProvider {
   private async executeTwelveDataFetch(
     endpoint: string,
     params: Record<string, string>,
-    maxRetries = 2
+    maxRetries = 1
   ): Promise<any> {
     const query = new URLSearchParams({
       ...params,
@@ -179,14 +179,21 @@ export class TwelveDataProvider implements MarketDataProvider {
 
     const fullUrl = `${this.apiUrl}${endpoint}?${query.toString()}`;
 
+    const configuredTimeout = Number(process.env.TWELVEDATA_FETCH_TIMEOUT_MS);
+    const fetchTimeoutMs =
+      Number.isFinite(configuredTimeout) && configuredTimeout >= 1000 ? configuredTimeout : 3500;
+    const maxRetriesToUse = Number.isFinite(Number(process.env.TWELVEDATA_MAX_RETRIES))
+      ? Number(process.env.TWELVEDATA_MAX_RETRIES)
+      : maxRetries;
+
     let attempt = 0;
     let delay = 500;
 
-    while (attempt <= maxRetries) {
+    while (attempt <= maxRetriesToUse) {
       attempt++;
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
+        const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
 
         const response = await fetch(fullUrl, {
           signal: controller.signal,

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { api, setStoredToken } from '../services/api.ts';
 import { User } from '../types.ts';
-import { Compass, ShieldCheck, Lock, Mail, ArrowRight, UserCheck } from 'lucide-react';
+import { Compass, ShieldCheck, Shield, Lock, Mail, ArrowRight, UserCheck } from 'lucide-react';
 
 interface AuthPageProps {
   onAuthSuccess: (user: User) => void;
@@ -32,6 +32,23 @@ export function AuthPage({ onAuthSuccess }: AuthPageProps) {
       }
     } catch (err: any) {
       setError(err.message || 'Authentication failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleQuickAdminLogin = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await api.login({
+        email: 'admin@tradepilot.io',
+        password: 'AdminPilot2026!',
+      });
+      setStoredToken(res.token);
+      onAuthSuccess(res.user);
+    } catch (err: any) {
+      setError(err.message || 'Admin login failed');
     } finally {
       setLoading(false);
     }
@@ -161,9 +178,18 @@ export function AuthPage({ onAuthSuccess }: AuthPageProps) {
             </button>
           </form>
 
-          {/* Quick Demo Access Button */}
+          {/* Quick Access Buttons */}
           <div className="pt-2 border-t border-zinc-800 space-y-2">
-            <span className="text-[11px] text-zinc-500 block text-center">Instant Evaluation Access</span>
+            <span className="text-[11px] text-zinc-500 block text-center">Instant Profile Access</span>
+            <button
+              type="button"
+              onClick={handleQuickAdminLogin}
+              disabled={loading}
+              className="w-full py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+            >
+              <Shield className="w-4 h-4 text-amber-400" />
+              <span>Sign In as Admin (Market Warm-Up Panel)</span>
+            </button>
             <button
               type="button"
               onClick={handleQuickDemoLogin}

@@ -83,6 +83,9 @@ export interface Stage1EvaluationOutcome {
   signalEvent?: SignalLifecycleEvent;
   notificationQueued?: boolean;
   notificationSkippedReason?: string;
+  h4DurationMs?: number;
+  h1DurationMs?: number;
+  m15DurationMs?: number;
 }
 
 export interface Stage2EvaluationOutcome {
@@ -101,6 +104,7 @@ export interface Stage2EvaluationOutcome {
   reason: string;
   notificationQueued?: boolean;
   notificationSkippedReason?: string;
+  m5DurationMs?: number;
 }
 
 export interface DualStageCycleReport {
@@ -115,6 +119,14 @@ export interface DualStageCycleReport {
     failedCount: number;
   };
   creditBudget: ReturnType<typeof twelveDataBudget.getSnapshot>;
+  skippedReason?: string;
+  executionDurations?: {
+    totalMs: number;
+    h4Ms?: number;
+    h1Ms?: number;
+    m15Ms?: number;
+    m5Ms?: number;
+  };
 }
 
 export class DualStageSignalAlertService {
@@ -1032,6 +1044,7 @@ export class DualStageSignalAlertService {
     }
 
     // 1. Load & Validate H4 (Market Direction)
+    const h4Start = Date.now();
     const h4Loaded = await this.resolveValidatedTimeframeCandles({
       symbol: sym,
       timeframe: htfDirTf,
@@ -1039,6 +1052,7 @@ export class DualStageSignalAlertService {
       nowMs,
       suppliedCandles: suppliedH4,
     });
+    const h4DurationMs = Date.now() - h4Start;
     if (!h4Loaded.ok) {
       return {
         configId: config.id,
@@ -1057,10 +1071,12 @@ export class DualStageSignalAlertService {
         isClosedCandle: h4Loaded.isClosedCandle,
         reason: h4Loaded.errorReason || `${htfDirTf} market data unavailable for ${sym}.`,
         createdNewEvent: false,
+        h4DurationMs,
       };
     }
 
     // 2. Load & Validate H1 (Trend Confirmation)
+    const h1Start = Date.now();
     const h1Loaded = await this.resolveValidatedTimeframeCandles({
       symbol: sym,
       timeframe: htfConfTf,
@@ -1068,6 +1084,7 @@ export class DualStageSignalAlertService {
       nowMs,
       suppliedCandles: suppliedH1,
     });
+    const h1DurationMs = Date.now() - h1Start;
     if (!h1Loaded.ok) {
       return {
         configId: config.id,
@@ -1086,10 +1103,13 @@ export class DualStageSignalAlertService {
         isClosedCandle: h1Loaded.isClosedCandle,
         reason: h1Loaded.errorReason || `${htfConfTf} market data unavailable for ${sym}.`,
         createdNewEvent: false,
+        h4DurationMs,
+        h1DurationMs,
       };
     }
 
     // 3. Load & Validate M15 (Pullback Setup)
+    const m15Start = Date.now();
     const m15Loaded = await this.resolveValidatedTimeframeCandles({
       symbol: sym,
       timeframe: pTf,
@@ -1097,6 +1117,7 @@ export class DualStageSignalAlertService {
       nowMs,
       suppliedCandles: suppliedM15,
     });
+    const m15DurationMs = Date.now() - m15Start;
     if (!m15Loaded.ok || !m15Loaded.targetCandle) {
       return {
         configId: config.id,
@@ -1115,6 +1136,9 @@ export class DualStageSignalAlertService {
         isClosedCandle: m15Loaded.isClosedCandle,
         reason: m15Loaded.errorReason || `${pTf} market data unavailable for ${sym}.`,
         createdNewEvent: false,
+        h4DurationMs,
+        h1DurationMs,
+        m15DurationMs,
       };
     }
 
@@ -1947,10 +1971,26 @@ export class DualStageSignalAlertService {
     symbol?: string;
     triggerSource?: 'MANUAL' | 'CRON' | 'SCHEDULER';
   }): Promise<DualStageCycleReport> {
+    const cycleStartMs = Date.now();
     const startedAt = new Date().toISOString();
     const triggerSource = params?.triggerSource || 'MANUAL';
+    const targetSymbol = params?.symbol ? params.symbol.toUpperCase() : 'XAUUSD';
+    const lockKey = `EVAL_${targetSymbol}`;
+    const lockId = `${process.pid}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
+    const executionDurations: {
+      totalMs: number;
+      h4Ms?: number;
+      h1Ms?: number;
+      m15Ms?: number;
+      m5Ms?: number;
+    } = { totalMs: 0 };
+
+    // 1. In-memory local process mutex
     if (this.isCycleRunning) {
+      console.log(
+        `[DualStageSignalAlertService] In-memory concurrency guard: cycle already running in current instance for ${targetSymbol}`
+      );
       return {
         startedAt,
         completedAt: new Date().toISOString(),
@@ -1959,6 +1999,32 @@ export class DualStageSignalAlertService {
         stage2Evaluations: [],
         queueSummary: { processedCount: 0, sentCount: 0, failedCount: 0 },
         creditBudget: twelveDataBudget.getSnapshot(),
+        skippedReason: 'IN_MEMORY_CONCURRENCY_LOCKED',
+        executionDurations: { totalMs: Date.now() - cycleStartMs },
+      };
+    }
+
+    // 2. Database-backed atomic distributed lock (cross-Vercel instance)
+    const lockResult = await db.acquireDistributedLock({
+      lockKey,
+      lockId,
+      leaseSeconds: 30, // 30-second lease with automatic recovery/expiry to prevent permanent deadlocks
+    });
+
+    if (!lockResult.acquired) {
+      console.log(
+        `[DualStageSignalAlertService] Distributed concurrency guard: active lock '${lockKey}' held by another serverless instance. Skipping cycle cleanly.`
+      );
+      return {
+        startedAt,
+        completedAt: new Date().toISOString(),
+        triggerSource,
+        stage1Evaluations: [],
+        stage2Evaluations: [],
+        queueSummary: { processedCount: 0, sentCount: 0, failedCount: 0 },
+        creditBudget: twelveDataBudget.getSnapshot(),
+        skippedReason: 'DISTRIBUTED_LOCK_ACTIVE',
+        executionDurations: { totalMs: Date.now() - cycleStartMs },
       };
     }
 
@@ -1968,61 +2034,74 @@ export class DualStageSignalAlertService {
         await db.ensureDefaultXauusdAlertConfig(params.userId);
       }
 
+      // Hard budget to stop cleanly before Vercel 10s serverless timeout
+      const CYCLE_MAX_DURATION_MS = 6500;
+
       // 1. Evaluate existing PENDING_CONFIRMATION events first (Stage 2 on M5)
       const pendingEvents = await db.getPendingConfirmationEvents({
         userId: params?.userId,
-        symbol: params?.symbol,
+        symbol: targetSymbol,
       });
 
       const stage2Evaluations: Stage2EvaluationOutcome[] = [];
       for (const ev of pendingEvents) {
+        if (Date.now() - cycleStartMs > CYCLE_MAX_DURATION_MS) {
+          console.warn(
+            `[DualStageSignalAlertService] Cycle duration budget (${CYCLE_MAX_DURATION_MS}ms) reached during pending events. Halting gracefully.`
+          );
+          break;
+        }
+        const m5Start = Date.now();
         const s2 = await this.evaluateStage2Confirmation(ev);
+        const m5Elapsed = Date.now() - m5Start;
+        s2.m5DurationMs = m5Elapsed;
+        executionDurations.m5Ms = (executionDurations.m5Ms || 0) + m5Elapsed;
         stage2Evaluations.push(s2);
       }
 
       // 2. Evaluate enabled SignalAlertConfigs for new initial setups (Stage 1 on H4 + H1 + M15)
       const enabledConfigs = await db.getEnabledSignalAlertConfigs({
         userId: params?.userId,
-        symbol: params?.symbol,
+        symbol: targetSymbol,
       });
 
       const stage1Evaluations: Stage1EvaluationOutcome[] = [];
       for (const cfg of enabledConfigs) {
-        // Maintain confirmation timeframe (e.g. M5) market data freshness for enabled 4-TF configs
-        const cTf = (cfg.confirmationTimeframe || 'M5') as Timeframe;
-        const sym = cfg.symbol.toUpperCase();
-        try {
-          const budgetCheck = twelveDataBudget.canSpendBackgroundCredit(1);
-          if (budgetCheck.allowed) {
-            const stored = await db.getCandles({ symbol: sym, timeframe: cTf, limit: 10 });
-            const freshness = this.checkCandleSliceFreshness(stored, cTf, sym);
-            if (freshness.isStale) {
-              await MarketDataSyncService.syncMarketData({
-                symbol: sym,
-                timeframe: cTf,
-                count: 250,
-              });
-            }
-          }
-        } catch (syncErr: any) {
+        if (Date.now() - cycleStartMs > CYCLE_MAX_DURATION_MS) {
           console.warn(
-            `[DualStageSignalAlertService] Optional confirmation timeframe sync warning for ${sym} [${cTf}]:`,
-            syncErr.message
+            `[DualStageSignalAlertService] Cycle duration budget (${CYCLE_MAX_DURATION_MS}ms) reached before config ${cfg.id}. Halting gracefully.`
           );
+          break;
         }
 
         const s1 = await this.evaluateStage1ForConfig(cfg);
+        if (s1.h4DurationMs) executionDurations.h4Ms = (executionDurations.h4Ms || 0) + s1.h4DurationMs;
+        if (s1.h1DurationMs) executionDurations.h1Ms = (executionDurations.h1Ms || 0) + s1.h1DurationMs;
+        if (s1.m15DurationMs) executionDurations.m15Ms = (executionDurations.m15Ms || 0) + s1.m15DurationMs;
         stage1Evaluations.push(s1);
 
         // Immediate Stage 2 evaluation when a new initial setup is detected and created
         if (s1.createdNewEvent && s1.signalEvent) {
+          const m5Start = Date.now();
           const s2 = await this.evaluateStage2Confirmation(s1.signalEvent, cfg);
+          const m5Elapsed = Date.now() - m5Start;
+          s2.m5DurationMs = m5Elapsed;
+          executionDurations.m5Ms = (executionDurations.m5Ms || 0) + m5Elapsed;
           stage2Evaluations.push(s2);
         }
       }
 
       // 3. Process due pending/retry-scheduled WhatsApp notification jobs (scoped by userId when provided)
-      const queueRes = await whatsappCloudProvider.processPendingQueue(10, params?.userId);
+      let queueRes = { processedCount: 0, sentCount: 0, failedCount: 0 };
+      if (Date.now() - cycleStartMs <= CYCLE_MAX_DURATION_MS) {
+        queueRes = await whatsappCloudProvider.processPendingQueue(10, params?.userId);
+      }
+
+      executionDurations.totalMs = Date.now() - cycleStartMs;
+
+      console.log(
+        `[DualStageAlert] event=evaluation_durations total_ms=${executionDurations.totalMs} h4_ms=${executionDurations.h4Ms || 0} h1_ms=${executionDurations.h1Ms || 0} m15_ms=${executionDurations.m15Ms || 0} m5_ms=${executionDurations.m5Ms || 0} symbol=${targetSymbol}`
+      );
 
       return {
         startedAt,
@@ -2036,9 +2115,15 @@ export class DualStageSignalAlertService {
           failedCount: queueRes.failedCount,
         },
         creditBudget: twelveDataBudget.getSnapshot(),
+        executionDurations,
       };
     } finally {
       this.isCycleRunning = false;
+      try {
+        await db.releaseDistributedLock({ lockKey, lockId });
+      } catch (err: any) {
+        console.warn(`[DualStageSignalAlertService] Warning releasing distributed lock '${lockKey}':`, err?.message);
+      }
     }
   }
 }

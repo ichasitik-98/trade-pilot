@@ -11,14 +11,16 @@ import {
   Settings,
   Compass,
   Bell,
+  Database,
 } from 'lucide-react';
 
 interface SidebarProps {
   currentTab: string;
   onTabChange: (tab: string) => void;
+  isAdmin?: boolean;
 }
 
-export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
+export function Sidebar({ currentTab, onTabChange, isAdmin }: SidebarProps) {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'journal', label: 'Trading Journal', icon: BookOpen },
@@ -30,6 +32,9 @@ export function Sidebar({ currentTab, onTabChange }: SidebarProps) {
     { id: 'watchlist', label: 'Watchlist', icon: Eye },
     { id: 'risk-manager', label: 'Risk Manager', icon: Shield },
     { id: 'ai-analyst', label: 'AI Analyst', icon: Sparkles, badge: 'Flash' },
+    ...(isAdmin
+      ? [{ id: 'admin-warmup', label: 'Market Warm-Up', icon: Database, badge: 'ADMIN' }]
+      : []),
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 

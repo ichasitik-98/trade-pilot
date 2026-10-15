@@ -10,14 +10,16 @@ import {
   Sparkles,
   Settings,
   Bell,
+  Database,
 } from 'lucide-react';
 
 interface MobileNavProps {
   currentTab: string;
   onTabChange: (tab: string) => void;
+  isAdmin?: boolean;
 }
 
-export function MobileNav({ currentTab, onTabChange }: MobileNavProps) {
+export function MobileNav({ currentTab, onTabChange, isAdmin }: MobileNavProps) {
   const tabs = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
     { id: 'journal', label: 'Journal', icon: BookOpen },
@@ -29,6 +31,7 @@ export function MobileNav({ currentTab, onTabChange }: MobileNavProps) {
     { id: 'watchlist', label: 'Watchlist', icon: Eye },
     { id: 'risk-manager', label: 'Risk', icon: Shield },
     { id: 'ai-analyst', label: 'AI', icon: Sparkles },
+    ...(isAdmin ? [{ id: 'admin-warmup', label: 'Warm-Up', icon: Database }] : []),
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 

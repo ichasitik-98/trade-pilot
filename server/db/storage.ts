@@ -1673,6 +1673,102 @@ export class DatabaseStore {
     return mapMarketDataStatus(upserted);
   }
 
+  /**
+   * Database-backed atomic distributed lock for Vercel serverless multi-instance concurrency control.
+   * Uses PostgreSQL ON CONFLICT ("symbol", "timeframe") DO UPDATE ... WHERE with automatic expiry/recovery.
+   */
+  public async acquireDistributedLock(params: {
+    lockKey: string;
+    lockId: string;
+    leaseSeconds?: number;
+  }): Promise<{ acquired: boolean; lockKey: string; lockId: string; reason?: string }> {
+    await this.init();
+    const { lockKey, lockId, leaseSeconds = 30 } = params;
+    const lockSymbol = 'DIST_LOCK';
+    const lockTimeframe = lockKey.toUpperCase();
+
+    try {
+      const acquireSql = `
+        INSERT INTO "MarketDataStatus" ("id", "symbol", "timeframe", "status", "errorMessage", "lastSuccessfulSync", "lastCandleTimestamp", "updatedAt")
+        VALUES (gen_random_uuid()::text, $1, $2, 'LOCKED', $3, NOW(), NOW() + ($4 || ' seconds')::interval, NOW())
+        ON CONFLICT ("symbol", "timeframe") DO UPDATE
+        SET "status" = 'LOCKED',
+            "errorMessage" = EXCLUDED."errorMessage",
+            "lastSuccessfulSync" = NOW(),
+            "lastCandleTimestamp" = NOW() + ($4 || ' seconds')::interval,
+            "updatedAt" = NOW()
+        WHERE "MarketDataStatus"."status" != 'LOCKED'
+           OR "MarketDataStatus"."lastCandleTimestamp" IS NULL
+           OR "MarketDataStatus"."lastCandleTimestamp" < NOW()
+        RETURNING "id", "errorMessage", "status";
+      `;
+
+      const rows: any[] = await prisma.$queryRawUnsafe(
+        acquireSql,
+        lockSymbol,
+        lockTimeframe,
+        lockId,
+        String(leaseSeconds)
+      );
+
+      if (rows && rows.length > 0) {
+        return { acquired: true, lockKey, lockId };
+      }
+
+      return {
+        acquired: false,
+        lockKey,
+        lockId,
+        reason: `Active distributed lock '${lockKey}' held by another serverless instance.`,
+      };
+    } catch (err: any) {
+      console.warn(`[DatabaseStore] Warning acquiring distributed lock '${lockKey}':`, err?.message);
+      return {
+        acquired: false,
+        lockKey,
+        lockId,
+        reason: `Database error acquiring distributed lock: ${err?.message}`,
+      };
+    }
+  }
+
+  /**
+   * Safely releases a database-backed distributed lock if held by the matching lockId.
+   */
+  public async releaseDistributedLock(params: {
+    lockKey: string;
+    lockId: string;
+  }): Promise<boolean> {
+    await this.init();
+    const { lockKey, lockId } = params;
+    const lockSymbol = 'DIST_LOCK';
+    const lockTimeframe = lockKey.toUpperCase();
+
+    try {
+      const releaseSql = `
+        UPDATE "MarketDataStatus"
+        SET "status" = 'IDLE',
+            "errorMessage" = NULL,
+            "lastCandleTimestamp" = NULL,
+            "updatedAt" = NOW()
+        WHERE "symbol" = $1 AND "timeframe" = $2 AND "errorMessage" = $3
+        RETURNING "id";
+      `;
+
+      const rows: any[] = await prisma.$queryRawUnsafe(
+        releaseSql,
+        lockSymbol,
+        lockTimeframe,
+        lockId
+      );
+
+      return rows && rows.length > 0;
+    } catch (err: any) {
+      console.warn(`[DatabaseStore] Warning releasing distributed lock '${lockKey}':`, err?.message);
+      return false;
+    }
+  }
+
   // ----------------------------------------------------
   // MARKET DATA GAPS
   // ----------------------------------------------------
