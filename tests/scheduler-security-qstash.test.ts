@@ -903,4 +903,171 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
       expect(safeTestMode).toBe(true);
     });
   });
+
+  describe('9. Cycle Timeout, Absolute Deadline Enforcement & Stage Duration Observability', () => {
+    it('halts gracefully when cycle deadline is exhausted before lock acquisition without throwing', async () => {
+      // Pass a deadline that has already expired
+      const expiredDeadline = Date.now() - 500;
+      const report = await DualStageSignalAlertService.runEvaluationCycle({
+        symbol: 'XAUUSD',
+        triggerSource: 'CRON',
+        deadlineMs: expiredDeadline,
+      });
+
+      expect(report.skippedReason).toBe('DEADLINE_EXCEEDED_BEFORE_LOCK');
+      expect(report.stage1Evaluations).toHaveLength(0);
+      expect(report.stage2Evaluations).toHaveLength(0);
+      expect(report.executionDurations?.lastStage).toBe('PRE_LOCK_DEADLINE_EXCEEDED');
+      expect(report.executionDurations?.haltReason).toBe('CYCLE_DEADLINE_EXCEEDED_BEFORE_LOCK');
+      expect(report.executionDurations?.strategyCompleted).toBe(false);
+      expect(report.executionDurations?.h4Ms).toBeNull();
+      expect(report.executionDurations?.h1Ms).toBeNull();
+      expect(report.executionDurations?.m15Ms).toBeNull();
+      expect(report.executionDurations?.m5Ms).toBeNull();
+    });
+
+    it('halts gracefully when deadline expires before config evaluation and records distinct null for unexecuted stages', async () => {
+      // Budget is only 50ms, ensuring it expires before or during early queries
+      const report = await DualStageSignalAlertService.runEvaluationCycle({
+        symbol: 'XAUUSD',
+        triggerSource: 'CRON',
+        maxDurationMs: 1, // 1ms budget immediately expires
+      });
+
+      expect(report.stage1Evaluations).toHaveLength(0);
+      expect(report.executionDurations).toBeDefined();
+      expect(report.executionDurations?.strategyCompleted).toBe(false);
+      expect(report.executionDurations?.haltReason).toMatch(/DEADLINE_EXCEEDED/);
+
+      // Unexecuted stages must be null, not 0
+      expect(report.executionDurations?.h4Ms).toBeNull();
+      expect(report.executionDurations?.h1Ms).toBeNull();
+      expect(report.executionDurations?.m15Ms).toBeNull();
+      expect(report.executionDurations?.m5Ms).toBeNull();
+    });
+
+    it('ensures distributed lock is always safely released in finally block even when deadline timeout occurs', async () => {
+      const lockKey = 'EVAL_XAUUSD';
+
+      // Run a cycle that times out immediately
+      const report = await DualStageSignalAlertService.runEvaluationCycle({
+        symbol: 'XAUUSD',
+        triggerSource: 'CRON',
+        maxDurationMs: 1,
+      });
+
+      expect(report.executionDurations).toBeDefined();
+
+      // Verify that after timeout, the lock is immediately available for acquisition
+      const testLockId = `test_recovery_${Date.now()}`;
+      const afterClaim = await db.acquireDistributedLock({
+        lockKey,
+        lockId: testLockId,
+        leaseSeconds: 10,
+      });
+
+      expect(afterClaim.acquired).toBe(true);
+      await db.releaseDistributedLock({ lockKey, lockId: testLockId });
+    });
+
+    it('evaluateStage1ForConfig respects deadlineMs and aborts before H1/M15 when deadline is exceeded', async () => {
+      const mockConfig: any = {
+        id: 'cfg_deadline_test',
+        userId: 'usr_test',
+        symbol: 'XAUUSD',
+        enabled: true,
+        htfDirectionTimeframe: 'H4',
+        htfConfirmationTimeframe: 'H1',
+        primaryTimeframe: 'M15',
+        confirmationTimeframe: 'M5',
+        initialScoreThreshold: 65,
+        confirmationScoreThreshold: 65,
+        requireClosedCandle: true,
+        requireTrendAlignment: true,
+        requireStructureAlignment: true,
+        requireMomentumAlignment: false,
+        minAdx: 18,
+        expirationMinutes: 240,
+        invalidationPolicy: 'OPPOSITE_OR_STOP',
+        enableInitialAlert: true,
+        enableConfirmationAlert: true,
+        whatsappEnabled: false,
+        whatsappRecipient: '+628159533311',
+        useTemplateMessage: false,
+      };
+
+      // Call evaluateStage1ForConfig with an already-expired deadline
+      const outcome = await DualStageSignalAlertService.evaluateStage1ForConfig(mockConfig, {
+        deadlineMs: Date.now() - 100,
+      });
+
+      expect(outcome.status).toBe('BLOCKED');
+      expect(outcome.state).toBe('SKIPPED_DATA_UNAVAILABLE');
+      expect(outcome.reason).toContain('Cycle deadline exceeded');
+      expect(outcome.createdNewEvent).toBe(false);
+    });
+
+    it('guarantees zero calls to Meta Graph API during evaluation cycle when WhatsApp is disabled', async () => {
+      const metaDispatchSpy = vi.spyOn(whatsappCloudProvider, 'dispatchPayloadToMeta');
+      vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockResolvedValueOnce([]);
+
+      const report = await DualStageSignalAlertService.runEvaluationCycle({
+        symbol: 'XAUUSD',
+        triggerSource: 'CRON',
+        maxDurationMs: 3000,
+      });
+
+      expect(report).toBeDefined();
+      expect(metaDispatchSpy).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('strictly rejects non-XAUUSD symbols with HTTP 400 and does not start evaluation cycle when scheduler is authorized', async () => {
+      process.env.ALERT_SCHEDULER_ENABLED = 'true';
+      const evalSpy = vi.spyOn(DualStageSignalAlertService, 'runEvaluationCycle');
+
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address() as { port: number };
+
+      try {
+        const payload = JSON.stringify({ symbol: 'BTCUSD' });
+        const reqHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${testCronSecret}`,
+          'Content-Length': String(Buffer.byteLength(payload)),
+        };
+
+        const res = await new Promise<{ status: number; body: any }>((resolve) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: addr.port,
+              path: '/api/alerts/cron',
+              method: 'POST',
+              headers: reqHeaders,
+            },
+            (resp) => {
+              let data = '';
+              resp.on('data', (chunk) => (data += chunk));
+              resp.on('end', () => resolve({ status: resp.statusCode || 500, body: JSON.parse(data) }));
+            }
+          );
+          req.write(payload);
+          req.end();
+        });
+
+        expect(res.status).toBe(400);
+        expect(res.body.ok).toBe(false);
+        expect(res.body.error).toContain('strictly restricted to XAUUSD');
+        expect(evalSpy).not.toHaveBeenCalled();
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        process.env.ALERT_SCHEDULER_ENABLED = 'false';
+      }
+    });
+  });
 });

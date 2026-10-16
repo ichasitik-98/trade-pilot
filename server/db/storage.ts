@@ -480,11 +480,14 @@ export class DatabaseStore {
     if (this.initialized) return;
 
     try {
-      // Verify connectivity via TLS to Neon PostgreSQL
-      await prisma.$queryRaw`SELECT 1`;
+      // Verify connectivity via TLS to Neon PostgreSQL and inspect counts concurrently
+      const [_, count, mappingCount] = await Promise.all([
+        prisma.$queryRaw`SELECT 1`,
+        prisma.instrument.count(),
+        prisma.providerSymbolMapping.count(),
+      ]);
 
       // Check if baseline instruments exist; if empty, run automated seed
-      const count = await prisma.instrument.count();
       if (count === 0) {
         console.log('[DatabaseStore] Instruments table empty on Neon, executing seed...');
         const { main: runSeed } = await import('../../prisma/seed.ts');
@@ -492,7 +495,6 @@ export class DatabaseStore {
       }
 
       // Ensure default provider symbol mappings exist
-      const mappingCount = await prisma.providerSymbolMapping.count();
       if (mappingCount === 0) {
         await this.seedDefaultProviderMappings();
       }

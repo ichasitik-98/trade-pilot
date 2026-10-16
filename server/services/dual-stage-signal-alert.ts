@@ -86,6 +86,7 @@ export interface Stage1EvaluationOutcome {
   h4DurationMs?: number;
   h1DurationMs?: number;
   m15DurationMs?: number;
+  eventPersistenceMs?: number;
 }
 
 export interface Stage2EvaluationOutcome {
@@ -105,6 +106,7 @@ export interface Stage2EvaluationOutcome {
   notificationQueued?: boolean;
   notificationSkippedReason?: string;
   m5DurationMs?: number;
+  eventPersistenceMs?: number;
 }
 
 export interface DualStageCycleReport {
@@ -122,10 +124,18 @@ export interface DualStageCycleReport {
   skippedReason?: string;
   executionDurations?: {
     totalMs: number;
-    h4Ms?: number;
-    h1Ms?: number;
-    m15Ms?: number;
-    m5Ms?: number;
+    lockAcquireMs?: number | null;
+    configQueryMs?: number | null;
+    pendingEventsQueryMs?: number | null;
+    h4Ms?: number | null;
+    h1Ms?: number | null;
+    m15Ms?: number | null;
+    m5Ms?: number | null;
+    eventPersistenceMs?: number | null;
+    notificationQueueMs?: number | null;
+    lastStage?: string;
+    haltReason?: string | null;
+    strategyCompleted?: boolean;
   };
 }
 
@@ -1003,6 +1013,7 @@ export class DualStageSignalAlertService {
       timeframeCandles?: Partial<Record<Timeframe, Candle[]>>;
       suppliedCandles?: Candle[];
       nowMs?: number;
+      deadlineMs?: number;
     }
   ): Promise<Stage1EvaluationOutcome> {
     const sym = config.symbol.toUpperCase();
@@ -1043,6 +1054,28 @@ export class DualStageSignalAlertService {
       };
     }
 
+    // Check absolute deadline before H4
+    if (options?.deadlineMs && Date.now() >= options.deadlineMs) {
+      return {
+        configId: config.id,
+        symbol: sym,
+        htfDirectionTimeframe: htfDirTf,
+        htfConfirmationTimeframe: htfConfTf,
+        primaryTimeframe: pTf,
+        confirmationTimeframe: cTf,
+        h4Direction: null,
+        h1Trend: null,
+        m15PullbackValid: false,
+        state: 'SKIPPED_DATA_UNAVAILABLE',
+        score: 0,
+        status: 'BLOCKED',
+        candleTimestamp: null,
+        isClosedCandle: true,
+        reason: 'Cycle deadline exceeded before H4 market data resolution.',
+        createdNewEvent: false,
+      };
+    }
+
     // 1. Load & Validate H4 (Market Direction)
     const h4Start = Date.now();
     const h4Loaded = await this.resolveValidatedTimeframeCandles({
@@ -1075,6 +1108,29 @@ export class DualStageSignalAlertService {
       };
     }
 
+    // Check absolute deadline before H1
+    if (options?.deadlineMs && Date.now() >= options.deadlineMs) {
+      return {
+        configId: config.id,
+        symbol: sym,
+        htfDirectionTimeframe: htfDirTf,
+        htfConfirmationTimeframe: htfConfTf,
+        primaryTimeframe: pTf,
+        confirmationTimeframe: cTf,
+        h4Direction: null,
+        h1Trend: null,
+        m15PullbackValid: false,
+        state: 'SKIPPED_DATA_UNAVAILABLE',
+        score: 0,
+        status: 'BLOCKED',
+        candleTimestamp: null,
+        isClosedCandle: true,
+        reason: 'Cycle deadline exceeded before H1 market data resolution.',
+        createdNewEvent: false,
+        h4DurationMs,
+      };
+    }
+
     // 2. Load & Validate H1 (Trend Confirmation)
     const h1Start = Date.now();
     const h1Loaded = await this.resolveValidatedTimeframeCandles({
@@ -1102,6 +1158,30 @@ export class DualStageSignalAlertService {
         candleTimestamp: null,
         isClosedCandle: h1Loaded.isClosedCandle,
         reason: h1Loaded.errorReason || `${htfConfTf} market data unavailable for ${sym}.`,
+        createdNewEvent: false,
+        h4DurationMs,
+        h1DurationMs,
+      };
+    }
+
+    // Check absolute deadline before M15
+    if (options?.deadlineMs && Date.now() >= options.deadlineMs) {
+      return {
+        configId: config.id,
+        symbol: sym,
+        htfDirectionTimeframe: htfDirTf,
+        htfConfirmationTimeframe: htfConfTf,
+        primaryTimeframe: pTf,
+        confirmationTimeframe: cTf,
+        h4Direction: null,
+        h1Trend: null,
+        m15PullbackValid: false,
+        state: 'SKIPPED_DATA_UNAVAILABLE',
+        score: 0,
+        status: 'BLOCKED',
+        candleTimestamp: null,
+        isClosedCandle: true,
+        reason: 'Cycle deadline exceeded before M15 market data resolution.',
         createdNewEvent: false,
         h4DurationMs,
         h1DurationMs,
@@ -1349,6 +1429,7 @@ export class DualStageSignalAlertService {
 
     const stage1Explanation = `[ENTRY BELUM DIKONFIRMASI / UNCONFIRMED SETUP] ${htfDirTf} Direction: ${h4Eval.direction} | ${htfConfTf} Trend: ${h1Eval.h1Trend} | ${pTf} Pullback: Valid. Awaiting ${cTf} Break of Structure (BOS) & closed confirmation candle. (${signalRun.explanation})`;
 
+    const persistStart = Date.now();
     const createdEvent = await db.createSignalLifecycleEvent(
       {
         id: crypto.randomUUID(),
@@ -1402,6 +1483,9 @@ export class DualStageSignalAlertService {
       }
     );
 
+    const refreshedEvent = (await db.getSignalLifecycleEventById(createdEvent.id)) || createdEvent;
+    const eventPersistenceMs = Date.now() - persistStart;
+
     let notificationQueued = false;
     let notificationSkippedReason: string | undefined;
 
@@ -1418,8 +1502,6 @@ export class DualStageSignalAlertService {
     } else {
       notificationSkippedReason = 'Initial stage alert is disabled in configuration.';
     }
-
-    const refreshedEvent = (await db.getSignalLifecycleEventById(createdEvent.id)) || createdEvent;
 
     return {
       configId: config.id,
@@ -1441,6 +1523,10 @@ export class DualStageSignalAlertService {
       signalEvent: refreshedEvent,
       notificationQueued,
       notificationSkippedReason,
+      h4DurationMs,
+      h1DurationMs,
+      m15DurationMs,
+      eventPersistenceMs,
     };
   }
 
@@ -1455,6 +1541,7 @@ export class DualStageSignalAlertService {
       suppliedCandles?: Candle[];
       timeframeCandles?: Partial<Record<Timeframe, Candle[]>>;
       nowMs?: number;
+      deadlineMs?: number;
     }
   ): Promise<Stage2EvaluationOutcome> {
     const nowMs = options?.nowMs ?? Date.now();
@@ -1484,6 +1571,25 @@ export class DualStageSignalAlertService {
         reason: `Idempotent guard: Signal event ${event.id} is already ${event.lifecycleStatus}. Duplicate confirmation suppressed.`,
         notificationQueued: false,
         notificationSkippedReason: `Signal already in ${event.lifecycleStatus} state.`,
+      };
+    }
+
+    // Check absolute deadline before M5 candle resolution
+    if (options?.deadlineMs && Date.now() >= options.deadlineMs) {
+      return {
+        signalEventId: event.id,
+        symbol: sym,
+        direction: event.direction,
+        confirmationTimeframe: cTf,
+        previousStatus: event.lifecycleStatus,
+        newStatus: 'PENDING_CONFIRMATION',
+        m5BosDetected: false,
+        m5CandleConfirmed: false,
+        score: null,
+        candleTimestamp: null,
+        satisfiedRules: [],
+        failedRules: ['Cycle deadline exceeded before M5 resolution'],
+        reason: 'Cycle deadline exceeded before M5 confirmation evaluation.',
       };
     }
 
@@ -1970,6 +2076,8 @@ export class DualStageSignalAlertService {
     userId?: string;
     symbol?: string;
     triggerSource?: 'MANUAL' | 'CRON' | 'SCHEDULER';
+    deadlineMs?: number;
+    maxDurationMs?: number;
   }): Promise<DualStageCycleReport> {
     const cycleStartMs = Date.now();
     const startedAt = new Date().toISOString();
@@ -1978,19 +2086,52 @@ export class DualStageSignalAlertService {
     const lockKey = `EVAL_${targetSymbol}`;
     const lockId = `${process.pid}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
+    // Single absolute deadline per cycle: strictly bounded to guarantee completion within serverless limits
+    const maxDurationMs = params?.maxDurationMs || 6500;
+    const cycleDeadlineMs = params?.deadlineMs || (cycleStartMs + maxDurationMs);
+    const isDeadlineExceeded = (minRequiredMs = 0): boolean => Date.now() + minRequiredMs > cycleDeadlineMs;
+
     const executionDurations: {
       totalMs: number;
-      h4Ms?: number;
-      h1Ms?: number;
-      m15Ms?: number;
-      m5Ms?: number;
-    } = { totalMs: 0 };
+      lockAcquireMs: number | null;
+      configQueryMs: number | null;
+      pendingEventsQueryMs: number | null;
+      h4Ms: number | null;
+      h1Ms: number | null;
+      m15Ms: number | null;
+      m5Ms: number | null;
+      eventPersistenceMs: number | null;
+      notificationQueueMs: number | null;
+      lastStage: string;
+      haltReason: string | null;
+      strategyCompleted: boolean;
+    } = {
+      totalMs: 0,
+      lockAcquireMs: null,
+      configQueryMs: null,
+      pendingEventsQueryMs: null,
+      h4Ms: null,
+      h1Ms: null,
+      m15Ms: null,
+      m5Ms: null,
+      eventPersistenceMs: null,
+      notificationQueueMs: null,
+      lastStage: 'START',
+      haltReason: null,
+      strategyCompleted: false,
+    };
+
+    const fmt = (v: number | null | undefined): string =>
+      v === null || v === undefined ? 'not_run' : `${v}`;
 
     // 1. In-memory local process mutex
     if (this.isCycleRunning) {
       console.log(
         `[DualStageSignalAlertService] In-memory concurrency guard: cycle already running in current instance for ${targetSymbol}`
       );
+      executionDurations.lastStage = 'IN_MEMORY_LOCKED';
+      executionDurations.haltReason = 'IN_MEMORY_CONCURRENCY_LOCKED';
+      executionDurations.totalMs = Date.now() - cycleStartMs;
       return {
         startedAt,
         completedAt: new Date().toISOString(),
@@ -2000,21 +2141,47 @@ export class DualStageSignalAlertService {
         queueSummary: { processedCount: 0, sentCount: 0, failedCount: 0 },
         creditBudget: twelveDataBudget.getSnapshot(),
         skippedReason: 'IN_MEMORY_CONCURRENCY_LOCKED',
-        executionDurations: { totalMs: Date.now() - cycleStartMs },
+        executionDurations,
+      };
+    }
+
+    // Pre-flight check: ensure sufficient budget before attempting lock
+    if (isDeadlineExceeded(1200)) {
+      console.warn(
+        `[DualStageSignalAlertService] Cycle deadline (${maxDurationMs}ms) exceeded before distributed lock acquisition. Halting gracefully.`
+      );
+      executionDurations.lastStage = 'PRE_LOCK_DEADLINE_EXCEEDED';
+      executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_BEFORE_LOCK';
+      executionDurations.totalMs = Date.now() - cycleStartMs;
+      return {
+        startedAt,
+        completedAt: new Date().toISOString(),
+        triggerSource,
+        stage1Evaluations: [],
+        stage2Evaluations: [],
+        queueSummary: { processedCount: 0, sentCount: 0, failedCount: 0 },
+        creditBudget: twelveDataBudget.getSnapshot(),
+        skippedReason: 'DEADLINE_EXCEEDED_BEFORE_LOCK',
+        executionDurations,
       };
     }
 
     // 2. Database-backed atomic distributed lock (cross-Vercel instance)
+    const lockStart = Date.now();
     const lockResult = await db.acquireDistributedLock({
       lockKey,
       lockId,
       leaseSeconds: 30, // 30-second lease with automatic recovery/expiry to prevent permanent deadlocks
     });
+    executionDurations.lockAcquireMs = Date.now() - lockStart;
+    executionDurations.lastStage = 'LOCK_ACQUIRED';
 
     if (!lockResult.acquired) {
       console.log(
         `[DualStageSignalAlertService] Distributed concurrency guard: active lock '${lockKey}' held by another serverless instance. Skipping cycle cleanly.`
       );
+      executionDurations.haltReason = 'DISTRIBUTED_LOCK_ACTIVE';
+      executionDurations.totalMs = Date.now() - cycleStartMs;
       return {
         startedAt,
         completedAt: new Date().toISOString(),
@@ -2024,7 +2191,7 @@ export class DualStageSignalAlertService {
         queueSummary: { processedCount: 0, sentCount: 0, failedCount: 0 },
         creditBudget: twelveDataBudget.getSnapshot(),
         skippedReason: 'DISTRIBUTED_LOCK_ACTIVE',
-        executionDurations: { totalMs: Date.now() - cycleStartMs },
+        executionDurations,
       };
     }
 
@@ -2034,73 +2201,155 @@ export class DualStageSignalAlertService {
         await db.ensureDefaultXauusdAlertConfig(params.userId);
       }
 
-      // Hard budget to stop cleanly before Vercel 10s serverless timeout
-      const CYCLE_MAX_DURATION_MS = 6500;
-
       // 1. Evaluate existing PENDING_CONFIRMATION events first (Stage 2 on M5)
-      const pendingEvents = await db.getPendingConfirmationEvents({
-        userId: params?.userId,
-        symbol: targetSymbol,
-      });
-
       const stage2Evaluations: Stage2EvaluationOutcome[] = [];
-      for (const ev of pendingEvents) {
-        if (Date.now() - cycleStartMs > CYCLE_MAX_DURATION_MS) {
-          console.warn(
-            `[DualStageSignalAlertService] Cycle duration budget (${CYCLE_MAX_DURATION_MS}ms) reached during pending events. Halting gracefully.`
-          );
-          break;
-        }
-        const m5Start = Date.now();
-        const s2 = await this.evaluateStage2Confirmation(ev);
-        const m5Elapsed = Date.now() - m5Start;
-        s2.m5DurationMs = m5Elapsed;
-        executionDurations.m5Ms = (executionDurations.m5Ms || 0) + m5Elapsed;
-        stage2Evaluations.push(s2);
-      }
 
-      // 2. Evaluate enabled SignalAlertConfigs for new initial setups (Stage 1 on H4 + H1 + M15)
-      const enabledConfigs = await db.getEnabledSignalAlertConfigs({
-        userId: params?.userId,
-        symbol: targetSymbol,
-      });
+      if (isDeadlineExceeded(1200)) {
+        console.warn(
+          `[DualStageSignalAlertService] Cycle deadline reached before pending events query. Halting gracefully.`
+        );
+        executionDurations.lastStage = 'PRE_PENDING_DEADLINE_EXCEEDED';
+        executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_BEFORE_PENDING_QUERY';
+      } else {
+        const pendingStart = Date.now();
+        const pendingEvents = await db.getPendingConfirmationEvents({
+          userId: params?.userId,
+          symbol: targetSymbol,
+        });
+        executionDurations.pendingEventsQueryMs = Date.now() - pendingStart;
+        executionDurations.lastStage = 'PENDING_QUERIED';
 
-      const stage1Evaluations: Stage1EvaluationOutcome[] = [];
-      for (const cfg of enabledConfigs) {
-        if (Date.now() - cycleStartMs > CYCLE_MAX_DURATION_MS) {
-          console.warn(
-            `[DualStageSignalAlertService] Cycle duration budget (${CYCLE_MAX_DURATION_MS}ms) reached before config ${cfg.id}. Halting gracefully.`
-          );
-          break;
-        }
-
-        const s1 = await this.evaluateStage1ForConfig(cfg);
-        if (s1.h4DurationMs) executionDurations.h4Ms = (executionDurations.h4Ms || 0) + s1.h4DurationMs;
-        if (s1.h1DurationMs) executionDurations.h1Ms = (executionDurations.h1Ms || 0) + s1.h1DurationMs;
-        if (s1.m15DurationMs) executionDurations.m15Ms = (executionDurations.m15Ms || 0) + s1.m15DurationMs;
-        stage1Evaluations.push(s1);
-
-        // Immediate Stage 2 evaluation when a new initial setup is detected and created
-        if (s1.createdNewEvent && s1.signalEvent) {
+        for (const ev of pendingEvents) {
+          if (isDeadlineExceeded(1200)) {
+            console.warn(
+              `[DualStageSignalAlertService] Cycle duration budget (${maxDurationMs}ms) reached during pending events. Halting gracefully.`
+            );
+            executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_DURING_PENDING_EVENTS';
+            break;
+          }
           const m5Start = Date.now();
-          const s2 = await this.evaluateStage2Confirmation(s1.signalEvent, cfg);
+          const s2 = await this.evaluateStage2Confirmation(ev, undefined, { deadlineMs: cycleDeadlineMs });
           const m5Elapsed = Date.now() - m5Start;
           s2.m5DurationMs = m5Elapsed;
           executionDurations.m5Ms = (executionDurations.m5Ms || 0) + m5Elapsed;
+          if (typeof s2.eventPersistenceMs === 'number') {
+            executionDurations.eventPersistenceMs =
+              (executionDurations.eventPersistenceMs || 0) + s2.eventPersistenceMs;
+          }
           stage2Evaluations.push(s2);
+        }
+      }
+
+      // 2. Evaluate enabled SignalAlertConfigs for new initial setups (Stage 1 on H4 + H1 + M15)
+      const stage1Evaluations: Stage1EvaluationOutcome[] = [];
+
+      if (isDeadlineExceeded(1500)) {
+        console.warn(
+          `[DualStageSignalAlertService] Cycle deadline reached before config query. Halting gracefully.`
+        );
+        executionDurations.lastStage = 'PRE_CONFIG_DEADLINE_EXCEEDED';
+        if (!executionDurations.haltReason) {
+          executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_BEFORE_CONFIG_QUERY';
+        }
+      } else {
+        const configStart = Date.now();
+        const enabledConfigs = await db.getEnabledSignalAlertConfigs({
+          userId: params?.userId,
+          symbol: targetSymbol,
+        });
+        executionDurations.configQueryMs = Date.now() - configStart;
+        executionDurations.lastStage = 'CONFIGS_QUERIED';
+
+        if (enabledConfigs.length === 0) {
+          executionDurations.strategyCompleted = true;
+          if (!executionDurations.haltReason) {
+            executionDurations.haltReason = 'NO_ENABLED_CONFIGS';
+          }
+        }
+
+        const sharedTimeframeCandles: Partial<Record<Timeframe, Candle[]>> = {};
+
+        for (const cfg of enabledConfigs) {
+          if (isDeadlineExceeded(1000)) {
+            console.warn(
+              `[DualStageSignalAlertService] Cycle duration budget (${maxDurationMs}ms) reached before config ${cfg.id}. Halting gracefully.`
+            );
+            executionDurations.haltReason = `CYCLE_DEADLINE_EXCEEDED_BEFORE_CONFIG_${cfg.id}`;
+            break;
+          }
+
+          const s1 = await this.evaluateStage1ForConfig(cfg, {
+            deadlineMs: cycleDeadlineMs,
+            timeframeCandles: sharedTimeframeCandles,
+          });
+
+          if (typeof s1.h4DurationMs === 'number') {
+            executionDurations.h4Ms = (executionDurations.h4Ms || 0) + s1.h4DurationMs;
+          }
+          if (typeof s1.h1DurationMs === 'number') {
+            executionDurations.h1Ms = (executionDurations.h1Ms || 0) + s1.h1DurationMs;
+          }
+          if (typeof s1.m15DurationMs === 'number') {
+            executionDurations.m15Ms = (executionDurations.m15Ms || 0) + s1.m15DurationMs;
+          }
+          if (typeof s1.eventPersistenceMs === 'number') {
+            executionDurations.eventPersistenceMs =
+              (executionDurations.eventPersistenceMs || 0) + s1.eventPersistenceMs;
+          }
+          stage1Evaluations.push(s1);
+          executionDurations.lastStage = `CONFIG_${cfg.id}`;
+
+          // Immediate Stage 2 evaluation when a new initial setup is detected and created
+          if (s1.createdNewEvent && s1.signalEvent) {
+            if (!isDeadlineExceeded(800)) {
+              const m5Start = Date.now();
+              const s2 = await this.evaluateStage2Confirmation(s1.signalEvent, cfg, {
+                deadlineMs: cycleDeadlineMs,
+              });
+              const m5Elapsed = Date.now() - m5Start;
+              s2.m5DurationMs = m5Elapsed;
+              executionDurations.m5Ms = (executionDurations.m5Ms || 0) + m5Elapsed;
+              if (typeof s2.eventPersistenceMs === 'number') {
+                executionDurations.eventPersistenceMs =
+                  (executionDurations.eventPersistenceMs || 0) + s2.eventPersistenceMs;
+              }
+              stage2Evaluations.push(s2);
+            }
+          }
+        }
+
+        // If loop finished all configs without halting early, strategy is fully completed
+        if (enabledConfigs.length > 0 && !executionDurations.haltReason) {
+          executionDurations.strategyCompleted = true;
+          executionDurations.haltReason = 'ALL_CONFIGS_EVALUATED';
         }
       }
 
       // 3. Process due pending/retry-scheduled WhatsApp notification jobs (scoped by userId when provided)
       let queueRes = { processedCount: 0, sentCount: 0, failedCount: 0 };
-      if (Date.now() - cycleStartMs <= CYCLE_MAX_DURATION_MS) {
+      if (!isDeadlineExceeded(800)) {
+        const queueStart = Date.now();
         queueRes = await whatsappCloudProvider.processPendingQueue(10, params?.userId);
+        executionDurations.notificationQueueMs = Date.now() - queueStart;
+        executionDurations.lastStage = 'QUEUE_PROCESSED';
       }
 
       executionDurations.totalMs = Date.now() - cycleStartMs;
 
       console.log(
-        `[DualStageAlert] event=evaluation_durations total_ms=${executionDurations.totalMs} h4_ms=${executionDurations.h4Ms || 0} h1_ms=${executionDurations.h1Ms || 0} m15_ms=${executionDurations.m15Ms || 0} m5_ms=${executionDurations.m5Ms || 0} symbol=${targetSymbol}`
+        `[DualStageAlert] event=evaluation_durations total_ms=${executionDurations.totalMs} lock_acquire_ms=${fmt(
+          executionDurations.lockAcquireMs
+        )} config_query_ms=${fmt(executionDurations.configQueryMs)} pending_query_ms=${fmt(
+          executionDurations.pendingEventsQueryMs
+        )} h4_ms=${fmt(executionDurations.h4Ms)} h1_ms=${fmt(executionDurations.h1Ms)} m15_ms=${fmt(
+          executionDurations.m15Ms
+        )} m5_ms=${fmt(executionDurations.m5Ms)} event_persistence_ms=${fmt(
+          executionDurations.eventPersistenceMs
+        )} notification_queue_ms=${fmt(
+          executionDurations.notificationQueueMs
+        )} last_stage=${executionDurations.lastStage} halt_reason=${
+          executionDurations.haltReason || 'none'
+        } strategy_completed=${executionDurations.strategyCompleted} symbol=${targetSymbol}`
       );
 
       return {
