@@ -56,6 +56,7 @@ export interface SyncMarketDataSummary {
   status: 'FRESH' | 'STALE' | 'UNAVAILABLE' | 'ERROR';
   dataQuality: number;
   durationMs: number;
+  candles?: MarketCandle[];
 }
 
 export class MarketDataSyncService {
@@ -435,6 +436,7 @@ export class MarketDataSyncService {
       status: finalStatus,
       dataQuality,
       durationMs: Date.now() - startedAt,
+      candles: storedCandles,
     };
   }
 

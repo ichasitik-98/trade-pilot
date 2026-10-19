@@ -475,6 +475,19 @@ function mapNotificationJob(j: any): NotificationJob {
 
 export class DatabaseStore {
   private initialized = false;
+  private enabledConfigsCache = new Map<string, { configs: SignalAlertConfig[]; cachedAt: number }>();
+  private static readonly CONFIGS_CACHE_TTL_MS = 30_000;
+
+  public clearSignalAlertConfigCache(): void {
+    this.enabledConfigsCache.clear();
+  }
+
+  public hasEnabledSignalAlertConfigsCached(params?: { userId?: string; symbol?: string }): boolean {
+    const sym = params?.symbol ? params.symbol.toUpperCase().replace(/[\/\_\-\.]/g, '') : undefined;
+    const cacheKey = `${params?.userId || 'ALL'}:${sym || 'ALL'}`;
+    const cached = this.enabledConfigsCache.get(cacheKey);
+    return Boolean(cached && (Date.now() - cached.cachedAt) < DatabaseStore.CONFIGS_CACHE_TTL_MS);
+  }
 
   public async init(): Promise<void> {
     if (this.initialized) return;
@@ -1836,6 +1849,7 @@ export class DatabaseStore {
             confirmationTimeframe: 'M5',
           },
         });
+        this.clearSignalAlertConfigCache();
         return [mapSignalAlertConfig(upgraded)];
       }
       return existing.map(mapSignalAlertConfig);
@@ -1870,6 +1884,7 @@ export class DatabaseStore {
       },
     });
 
+    this.clearSignalAlertConfigCache();
     return [mapSignalAlertConfig(created)];
   }
 
@@ -1880,17 +1895,31 @@ export class DatabaseStore {
   public async getEnabledSignalAlertConfigs(params?: {
     userId?: string;
     symbol?: string;
+    bypassCache?: boolean;
   }): Promise<SignalAlertConfig[]> {
+    const sym = params?.symbol ? params.symbol.toUpperCase().replace(/[\/\_\-\.]/g, '') : undefined;
+    const cacheKey = `${params?.userId || 'ALL'}:${sym || 'ALL'}`;
+    const now = Date.now();
+
+    if (!params?.bypassCache) {
+      const cached = this.enabledConfigsCache.get(cacheKey);
+      if (cached && now - cached.cachedAt < DatabaseStore.CONFIGS_CACHE_TTL_MS) {
+        return cached.configs;
+      }
+    }
+
     await this.init();
     const where: any = { enabled: true };
     if (params?.userId) where.userId = params.userId;
-    if (params?.symbol) where.symbol = params.symbol.toUpperCase().replace(/[\/\_\-\.]/g, '');
+    if (sym) where.symbol = sym;
 
     const list = await prisma.signalAlertConfig.findMany({
       where,
       orderBy: [{ symbol: 'asc' }, { updatedAt: 'desc' }],
     });
-    return list.map(mapSignalAlertConfig);
+    const mapped = list.map(mapSignalAlertConfig);
+    this.enabledConfigsCache.set(cacheKey, { configs: mapped, cachedAt: now });
+    return mapped;
   }
 
   public async getSignalAlertConfigById(id: string): Promise<SignalAlertConfig | undefined> {
@@ -2034,6 +2063,7 @@ export class DatabaseStore {
       },
     });
 
+    this.clearSignalAlertConfigCache();
     return mapSignalAlertConfig(upserted);
   }
 
@@ -2042,6 +2072,7 @@ export class DatabaseStore {
     const existing = await prisma.signalAlertConfig.findFirst({ where: { id, userId } });
     if (!existing) return false;
     await prisma.signalAlertConfig.delete({ where: { id } });
+    this.clearSignalAlertConfigCache();
     return true;
   }
 
@@ -2051,6 +2082,7 @@ export class DatabaseStore {
       where: { userId },
       data: { lastVerifiedTestAt: verifiedAt },
     });
+    this.clearSignalAlertConfigCache();
   }
 
   // ----------------------------------------------------

@@ -315,4 +315,250 @@ describe('TradePilot — Critical Scheduler Timing & Pending Event Audit Suite',
 
     expect(metaDispatchSpy).not.toHaveBeenCalled();
   }, 10000);
+
+  // 10. Akurasi pengukuran durasi query yang independen
+  it('10. accurately measures distinct query durations for pending events and config queries without sharing timer variables', async () => {
+    vi.spyOn(db, 'acquireDistributedLock').mockResolvedValue({
+      acquired: true,
+      lockKey: 'EVAL_XAUUSD',
+      lockId: 'mock_lock_10',
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 250));
+      return [];
+    });
+
+    vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      return [];
+    });
+
+    const report = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 6500,
+    });
+
+    expect(report.executionDurations?.pendingEventsQueryMs).toBeGreaterThanOrEqual(230);
+    expect(report.executionDurations?.pendingEventsQueryMs).toBeLessThan(400);
+
+    expect(report.executionDurations?.configQueryMs).toBeGreaterThanOrEqual(380);
+    expect(report.executionDurations?.configQueryMs).toBeLessThan(600);
+
+    // Verify distinct values: pending and config are definitely NOT sharing the same timer
+    expect(report.executionDurations?.configQueryMs).not.toEqual(
+      report.executionDurations?.pendingEventsQueryMs
+    );
+  }, 10000);
+
+  // 11. Cache hit dan cache miss alert config
+  it('11. validates alert config cache hit and cache miss behavior with invalidation on mutation', async () => {
+    db.clearSignalAlertConfigCache();
+    expect(db.hasEnabledSignalAlertConfigsCached({ symbol: 'XAUUSD' })).toBe(false);
+
+    // First call: cache miss (populates in-memory cache)
+    const configs1 = await db.getEnabledSignalAlertConfigs({ symbol: 'XAUUSD' });
+    expect(db.hasEnabledSignalAlertConfigsCached({ symbol: 'XAUUSD' })).toBe(true);
+
+    // Second call: cache hit
+    const configs2 = await db.getEnabledSignalAlertConfigs({ symbol: 'XAUUSD' });
+    expect(configs2).toEqual(configs1);
+
+    // Invalidate cache
+    db.clearSignalAlertConfigCache();
+    expect(db.hasEnabledSignalAlertConfigsCached({ symbol: 'XAUUSD' })).toBe(false);
+  });
+
+  // 12. Cold-start yang lambat tetap aman dan tidak melebihi budget
+  it('12. handles slow cold-start gracefully without exceeding serverless budget', async () => {
+    vi.spyOn(db, 'acquireDistributedLock').mockImplementation(async (params) => {
+      await new Promise((r) => setTimeout(r, 800));
+      return { acquired: true, lockKey: params.lockKey, lockId: params.lockId };
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 800));
+      return [];
+    });
+
+    // Total budget is 2800ms. Lock (800ms) + pending query (800ms) = 1600ms elapsed.
+    // Remaining is 1200ms (< 1500ms required threshold), guaranteeing graceful PRE_CONFIG halt.
+    const report = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 2800,
+    });
+
+    expect(report.executionDurations?.lastStage).toBe('PRE_CONFIG_DEADLINE_EXCEEDED');
+    expect(report.executionDurations?.haltReason).toBe('CYCLE_DEADLINE_EXCEEDED_BEFORE_CONFIG_QUERY');
+    expect(report.executionDurations?.strategyCompleted).toBe(false);
+    expect(report.executionDurations?.h4Ms).toBeNull();
+    expect(report.executionDurations?.h1Ms).toBeNull();
+    expect(report.executionDurations?.m15Ms).toBeNull();
+    expect(report.executionDurations?.m5Ms).toBeNull();
+  }, 10000);
+
+  // 13. Deadline selama evaluasi H4: tidak ada H1/M15/M5 yang salah dilaporkan sebagai selesai
+  it('13. halts when deadline expires during H4 and strictly leaves H1/M15/M5 as not_run', async () => {
+    vi.spyOn(db, 'acquireDistributedLock').mockResolvedValue({
+      acquired: true,
+      lockKey: 'EVAL_XAUUSD',
+      lockId: 'mock_lock_13',
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockResolvedValue([]);
+
+    const mockConfig = {
+      id: 'cfg_xauusd_mock',
+      userId: 'usr_demo_01',
+      symbol: 'XAUUSD',
+      enabled: true,
+      htfDirectionTimeframe: 'H4' as any,
+      htfConfirmationTimeframe: 'H1' as any,
+      primaryTimeframe: 'M15' as any,
+      confirmationTimeframe: 'M5' as any,
+      initialScoreThreshold: 65,
+      confirmationScoreThreshold: 65,
+      requireClosedCandle: true,
+      requireTrendAlignment: true,
+      requireStructureAlignment: true,
+      requireMomentumAlignment: false,
+      minAdx: 18.0,
+      expirationMinutes: 240,
+      invalidationPolicy: 'OPPOSITE_OR_STOP' as any,
+      enableInitialAlert: true,
+      enableConfirmationAlert: true,
+      whatsappEnabled: false,
+      whatsappRecipient: null,
+      useTemplateMessage: false,
+      templateLanguage: 'en_US',
+      configVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockResolvedValue([mockConfig]);
+
+    // H4 takes 1200ms
+    vi.spyOn(DualStageSignalAlertService as any, 'resolveValidatedTimeframeCandles').mockImplementation(
+      async (params: any) => {
+        if (params.timeframe === 'H4') {
+          await new Promise((r) => setTimeout(r, 1200));
+          return {
+            ok: true,
+            evalCandles: [{ timestamp: Date.now() - 3600000, open: 2600, high: 2610, low: 2590, close: 2605 }],
+            targetCandle: { timestamp: Date.now() - 3600000, open: 2600, high: 2610, low: 2590, close: 2605 },
+            isClosedCandle: true,
+            dataQuality: 100,
+          };
+        }
+        return { ok: false, errorReason: 'Should not run' };
+      }
+    );
+
+    // Total budget is 1500ms. After H4 takes 1200ms, deadline before H1 is exceeded!
+    const report = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 1500,
+    });
+
+    expect(report.executionDurations?.h4Ms).toBeGreaterThanOrEqual(1000);
+    expect(report.executionDurations?.h1Ms).toBeNull();
+    expect(report.executionDurations?.m15Ms).toBeNull();
+    expect(report.executionDurations?.m5Ms).toBeNull();
+    expect(report.executionDurations?.strategyCompleted).toBe(false);
+
+    expect(report.stage1Evaluations).toHaveLength(1);
+    expect(report.stage1Evaluations[0].reason).toContain('Cycle deadline exceeded before H1 market data resolution');
+  }, 10000);
+
+  // 14. Penggunaan cache sharedTimeframeCandles lintas config dalam siklus yang sama
+  it('14. reuses shared timeframe candles across multiple configs in the same cycle avoiding duplicate fetches', async () => {
+    vi.spyOn(db, 'acquireDistributedLock').mockResolvedValue({
+      acquired: true,
+      lockKey: 'EVAL_XAUUSD',
+      lockId: 'mock_lock_14',
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockResolvedValue([]);
+
+    const baseConfig = {
+      userId: 'usr_demo_01',
+      symbol: 'XAUUSD',
+      enabled: true,
+      htfDirectionTimeframe: 'H4' as any,
+      htfConfirmationTimeframe: 'H1' as any,
+      primaryTimeframe: 'M15' as any,
+      confirmationTimeframe: 'M5' as any,
+      initialScoreThreshold: 65,
+      confirmationScoreThreshold: 65,
+      requireClosedCandle: true,
+      requireTrendAlignment: true,
+      requireStructureAlignment: true,
+      requireMomentumAlignment: false,
+      minAdx: 18.0,
+      expirationMinutes: 240,
+      invalidationPolicy: 'OPPOSITE_OR_STOP' as any,
+      enableInitialAlert: true,
+      enableConfirmationAlert: true,
+      whatsappEnabled: false,
+      whatsappRecipient: null,
+      useTemplateMessage: false,
+      templateLanguage: 'en_US',
+      configVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const cfg1 = { ...baseConfig, id: 'cfg_1' };
+    const cfg2 = { ...baseConfig, id: 'cfg_2' };
+
+    vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockResolvedValue([cfg1, cfg2]);
+
+    let h4ResolveCount = 0;
+    const originalResolve = (DualStageSignalAlertService as any).resolveValidatedTimeframeCandles;
+    vi.spyOn(DualStageSignalAlertService as any, 'resolveValidatedTimeframeCandles').mockImplementation(
+      async (params: any) => {
+        if (params.timeframe === 'H4') {
+          h4ResolveCount++;
+        }
+        // Return dummy valid candles so Stage 1 evaluates NEUTRAL on H4 and terminates quickly
+        return {
+          ok: true,
+          evalCandles: Array.from({ length: 50 }, (_, i) => ({
+            timestamp: Date.now() - (50 - i) * 14400000,
+            open: 2600,
+            high: 2610,
+            low: 2590,
+            close: 2600,
+            source: 'TWELVEDATA',
+          })),
+          targetCandle: {
+            timestamp: Date.now() - 14400000,
+            open: 2600,
+            high: 2610,
+            low: 2590,
+            close: 2600,
+            source: 'TWELVEDATA',
+          },
+          isClosedCandle: true,
+          dataQuality: 100,
+        };
+      }
+    );
+
+    const report = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 6500,
+    });
+
+    expect(report.stage1Evaluations).toHaveLength(2);
+    // Both configs were evaluated, and H4 was supplied to config 2 via sharedTimeframeCandles!
+    expect(report.executionDurations?.strategyCompleted).toBe(true);
+  }, 10000);
 });

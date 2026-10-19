@@ -128,6 +128,7 @@ export interface DualStageCycleReport {
     totalMs: number;
     lockAcquireMs?: number | null;
     configQueryMs?: number | null;
+    configCacheHit?: boolean;
     pendingEventsQueryMs?: number | null;
     pendingEventsCount?: number;
     pendingEventsProcessedCount?: number;
@@ -387,27 +388,34 @@ export class DualStageSignalAlertService {
       }
 
       // Perform direct syncMarketData so any Twelve Data entitlement / quota / auth errors surface explicitly
-      await MarketDataSyncService.syncMarketData({
+      const syncRes = await MarketDataSyncService.syncMarketData({
         symbol: sym,
         timeframe,
         count: 250,
         deadlineMs: options?.deadlineMs,
       });
 
-      if (options?.deadlineMs && options.deadlineMs - Date.now() < 500) {
-        return {
-          ok: false,
-          candles: realStored,
-          isStale: freshness.isStale,
-          dataQuality: 0,
-          errorCode: 'DEADLINE_INSUFFICIENT',
-          errorReason: `Cycle deadline reached after syncMarketData. Deferring refreshed candle query.`,
-        };
-      }
+      let refreshed =
+        syncRes.candles && syncRes.candles.length > 0
+          ? syncRes.candles.filter((c) => c.source === 'TWELVEDATA')
+          : [];
 
-      const refreshed = (await db.getCandles({ symbol: sym, timeframe, limit: 250 })).filter(
-        (c) => c.source === 'TWELVEDATA'
-      );
+      if (refreshed.length === 0) {
+        if (options?.deadlineMs && options.deadlineMs - Date.now() < 500) {
+          return {
+            ok: false,
+            candles: realStored,
+            isStale: freshness.isStale,
+            dataQuality: 0,
+            errorCode: 'DEADLINE_INSUFFICIENT',
+            errorReason: `Cycle deadline reached after syncMarketData. Deferring refreshed candle query.`,
+          };
+        }
+
+        refreshed = (await db.getCandles({ symbol: sym, timeframe, limit: 250 })).filter(
+          (c) => c.source === 'TWELVEDATA'
+        );
+      }
       const postFreshness = this.checkCandleSliceFreshness(refreshed, timeframe, sym, nowMs);
 
       if (refreshed.length < 30) {
@@ -1127,6 +1135,10 @@ export class DualStageSignalAlertService {
       suppliedCandles: suppliedH4,
     });
     const h4DurationMs = Date.now() - h4Start;
+    if (options?.timeframeCandles && h4Loaded.ok && h4Loaded.evalCandles.length > 0) {
+      options.timeframeCandles[htfDirTf] = h4Loaded.evalCandles;
+      options.timeframeCandles.H4 = h4Loaded.evalCandles;
+    }
     if (!h4Loaded.ok) {
       return {
         configId: config.id,
@@ -1150,7 +1162,7 @@ export class DualStageSignalAlertService {
     }
 
     // Check absolute deadline before H1
-    if (options?.deadlineMs && Date.now() >= options.deadlineMs) {
+    if (options?.deadlineMs && options.deadlineMs - Date.now() < 500) {
       return {
         configId: config.id,
         symbol: sym,
@@ -1182,6 +1194,10 @@ export class DualStageSignalAlertService {
       suppliedCandles: suppliedH1,
     });
     const h1DurationMs = Date.now() - h1Start;
+    if (options?.timeframeCandles && h1Loaded.ok && h1Loaded.evalCandles.length > 0) {
+      options.timeframeCandles[htfConfTf] = h1Loaded.evalCandles;
+      options.timeframeCandles.H1 = h1Loaded.evalCandles;
+    }
     if (!h1Loaded.ok) {
       return {
         configId: config.id,
@@ -1206,7 +1222,7 @@ export class DualStageSignalAlertService {
     }
 
     // Check absolute deadline before M15
-    if (options?.deadlineMs && Date.now() >= options.deadlineMs) {
+    if (options?.deadlineMs && options.deadlineMs - Date.now() < 500) {
       return {
         configId: config.id,
         symbol: sym,
@@ -1239,6 +1255,10 @@ export class DualStageSignalAlertService {
       suppliedCandles: suppliedM15,
     });
     const m15DurationMs = Date.now() - m15Start;
+    if (options?.timeframeCandles && m15Loaded.ok && m15Loaded.evalCandles.length > 0) {
+      options.timeframeCandles[pTf] = m15Loaded.evalCandles;
+      options.timeframeCandles.M15 = m15Loaded.evalCandles;
+    }
     if (!m15Loaded.ok || !m15Loaded.targetCandle) {
       return {
         configId: config.id,
@@ -1287,6 +1307,7 @@ export class DualStageSignalAlertService {
         isClosedCandle,
         reason: h4Eval.reason,
         createdNewEvent: false,
+        h4DurationMs,
       };
     }
 
@@ -1315,6 +1336,8 @@ export class DualStageSignalAlertService {
         isClosedCandle,
         reason: h1Eval.reason,
         createdNewEvent: false,
+        h4DurationMs,
+        h1DurationMs,
       };
     }
 
@@ -1348,6 +1371,9 @@ export class DualStageSignalAlertService {
         isClosedCandle,
         reason: pullbackEval.reason,
         createdNewEvent: false,
+        h4DurationMs,
+        h1DurationMs,
+        m15DurationMs,
       };
     }
 
@@ -1425,6 +1451,9 @@ export class DualStageSignalAlertService {
         isClosedCandle,
         reason: noSignalReasons.join('; ') || 'Initial signal criteria not met (NO_SIGNAL).',
         createdNewEvent: false,
+        h4DurationMs,
+        h1DurationMs,
+        m15DurationMs,
       };
     }
 
@@ -1452,6 +1481,9 @@ export class DualStageSignalAlertService {
         signalEvent: existingEvent,
         notificationQueued: false,
         notificationSkippedReason: 'Duplicate candle evaluation suppressed by idempotency key.',
+        h4DurationMs,
+        h1DurationMs,
+        m15DurationMs,
       };
     }
 
@@ -2345,6 +2377,7 @@ export class DualStageSignalAlertService {
       totalMs: number;
       lockAcquireMs: number | null;
       configQueryMs: number | null;
+      configCacheHit: boolean;
       pendingEventsQueryMs: number | null;
       pendingEventsCount: number;
       pendingEventsProcessedCount: number;
@@ -2363,6 +2396,7 @@ export class DualStageSignalAlertService {
       totalMs: 0,
       lockAcquireMs: null,
       configQueryMs: null,
+      configCacheHit: false,
       pendingEventsQueryMs: null,
       pendingEventsCount: 0,
       pendingEventsProcessedCount: 0,
@@ -2536,12 +2570,17 @@ export class DualStageSignalAlertService {
         executionDurations.lastStage = 'PRE_CONFIG_DEADLINE_EXCEEDED';
         executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_BEFORE_CONFIG_QUERY';
       } else {
+        const isConfigCached = db.hasEnabledSignalAlertConfigsCached({
+          userId: params?.userId,
+          symbol: targetSymbol,
+        });
         const configStart = Date.now();
         const enabledConfigs = await db.getEnabledSignalAlertConfigs({
           userId: params?.userId,
           symbol: targetSymbol,
         });
         executionDurations.configQueryMs = Date.now() - configStart;
+        executionDurations.configCacheHit = isConfigCached;
         executionDurations.lastStage = 'CONFIGS_QUERIED';
 
         if (enabledConfigs.length === 0) {
@@ -2601,10 +2640,23 @@ export class DualStageSignalAlertService {
           }
         }
 
-        // If loop finished all configs without halting early, strategy is fully completed
+        // If loop finished all configs without halting early, strategy is fully completed ONLY if all configs resolved cleanly
         if (enabledConfigs.length > 0 && !executionDurations.haltReason) {
-          executionDurations.strategyCompleted = true;
-          executionDurations.haltReason = 'ALL_CONFIGS_EVALUATED';
+          const hasIncomplete = stage1Evaluations.some(
+            (s) => s.state === 'SKIPPED_DATA_UNAVAILABLE' || s.reason?.includes('deadline exceeded')
+          );
+          if (!hasIncomplete) {
+            executionDurations.strategyCompleted = true;
+            executionDurations.haltReason = 'ALL_CONFIGS_EVALUATED';
+          } else {
+            executionDurations.strategyCompleted = false;
+            const deadlineEval = stage1Evaluations.find((s) => s.reason?.includes('deadline exceeded'));
+            if (deadlineEval) {
+              executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_DURING_STAGE1';
+            } else {
+              executionDurations.haltReason = 'TIMEFRAME_DATA_INCOMPLETE';
+            }
+          }
         }
       }
 
@@ -2622,7 +2674,9 @@ export class DualStageSignalAlertService {
       console.log(
         `[DualStageAlert] event=evaluation_durations total_ms=${executionDurations.totalMs} lock_acquire_ms=${fmt(
           executionDurations.lockAcquireMs
-        )} config_query_ms=${fmt(executionDurations.configQueryMs)} pending_query_ms=${fmt(
+        )} config_query_ms=${fmt(executionDurations.configQueryMs)} config_cache_hit=${
+          executionDurations.configCacheHit === true
+        } pending_query_ms=${fmt(
           executionDurations.pendingEventsQueryMs
         )} pending_count=${
           executionDurations.pendingEventsCount
