@@ -33,6 +33,8 @@ export interface SyncMarketDataParams {
   from?: string | number | Date;
   to?: string | number | Date;
   count?: number;
+  deadlineMs?: number;
+  timeoutMs?: number;
 }
 
 export interface SyncMarketDataSummary {
@@ -277,6 +279,17 @@ export class MarketDataSyncService {
     if (params.to) {
       queryOpts.endTime = new Date(parseToUtcTimestamp(params.to));
     }
+    if (params.deadlineMs) {
+      const remainingBudgetMs = params.deadlineMs - Date.now();
+      if (remainingBudgetMs < 1500) {
+        throw new Error(
+          `SyncMarketData aborted: remaining cycle deadline (${remainingBudgetMs}ms) insufficient for network fetch.`
+        );
+      }
+      queryOpts.timeoutMs = Math.min(3000, Math.max(800, remainingBudgetMs - 400));
+    } else if (params.timeoutMs) {
+      queryOpts.timeoutMs = params.timeoutMs;
+    }
 
     let rawCandles: Candle[] = [];
     let hasProviderError = false;
@@ -319,8 +332,19 @@ export class MarketDataSyncService {
     // 9. Persist into Neon PostgreSQL
     let insertedCount = 0;
     if (deduplicated.length > 0) {
+      if (params.deadlineMs && params.deadlineMs - Date.now() < 800) {
+        throw new Error(
+          `SyncMarketData aborted: remaining cycle deadline (${params.deadlineMs - Date.now()}ms) insufficient for candle persistence.`
+        );
+      }
       const res = await db.upsertCandles(deduplicated);
       insertedCount = res.upsertedCount;
+    }
+
+    if (params.deadlineMs && params.deadlineMs - Date.now() < 600) {
+      throw new Error(
+        `SyncMarketData aborted: remaining cycle deadline (${params.deadlineMs - Date.now()}ms) insufficient for candle query.`
+      );
     }
 
     // Retrieve stored candles (ensure at least 250 lookback for 200-period indicator calculation)
@@ -335,6 +359,9 @@ export class MarketDataSyncService {
     const recentWindow = storedCandles.slice(-Math.min(storedCandles.length, 100));
     const detectedGaps = this.detectGaps(recentWindow, tf, assetClass);
     for (const g of detectedGaps) {
+      if (params.deadlineMs && params.deadlineMs - Date.now() < 400) {
+        break; // skip remaining non-critical gap logging to preserve cycle deadline
+      }
       await db.addMarketDataGap({
         symbol: sym,
         timeframe: tf,
@@ -379,10 +406,12 @@ export class MarketDataSyncService {
       dataQualityScore: dataQuality,
       errorMessage: providerErrorMsg,
     };
-    await db.upsertMarketDataStatus(statusRecord);
+    if (!params.deadlineMs || params.deadlineMs - Date.now() >= 400) {
+      await db.upsertMarketDataStatus(statusRecord);
+    }
 
     // Calculate indicators on persisted canonical candles
-    if (storedCandles.length >= 20) {
+    if (storedCandles.length >= 20 && (!params.deadlineMs || params.deadlineMs - Date.now() >= 300)) {
       const latestIndicators = IndicatorEngine.computeLatestSnapshot(storedCandles, sym, tf);
       await db.upsertTechnicalIndicators([latestIndicators]);
     }

@@ -514,7 +514,8 @@ describe('TradePilot Post-Upgrade Validation Audit — 12 Mandatory Verification
   }, 30000);
 
   it('7. Pengujian Wajib #7: Unclosed forming candles, lookahead timestamps, and stale data never trigger alerts', async () => {
-    const nowMs = Date.now();
+    // Deterministic weekday (Wednesday 14:00 UTC) to test trading day freshness threshold
+    const nowMs = new Date('2026-10-14T14:00:00Z').getTime();
     const h4Dur = 4 * 3600 * 1000;
     const h1Dur = 3600 * 1000;
 

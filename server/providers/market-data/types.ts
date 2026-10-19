@@ -6,6 +6,8 @@ export interface CandleQueryOptions {
   limit?: number;
   startTime?: Date;
   endTime?: Date;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface MarketDataProvider {

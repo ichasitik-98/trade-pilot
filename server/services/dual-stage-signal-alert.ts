@@ -105,8 +105,10 @@ export interface Stage2EvaluationOutcome {
   reason: string;
   notificationQueued?: boolean;
   notificationSkippedReason?: string;
-  m5DurationMs?: number;
-  eventPersistenceMs?: number;
+  m5DurationMs?: number | null;
+  eventPersistenceMs?: number | null;
+  fetchDurationMs?: number | null;
+  totalEventMs?: number;
 }
 
 export interface DualStageCycleReport {
@@ -127,6 +129,10 @@ export interface DualStageCycleReport {
     lockAcquireMs?: number | null;
     configQueryMs?: number | null;
     pendingEventsQueryMs?: number | null;
+    pendingEventsCount?: number;
+    pendingEventsProcessedCount?: number;
+    pendingFetchMs?: number | null;
+    pendingEventsTotalMs?: number | null;
     h4Ms?: number | null;
     h1Ms?: number | null;
     m15Ms?: number | null;
@@ -141,6 +147,10 @@ export interface DualStageCycleReport {
 
 export class DualStageSignalAlertService {
   private static isCycleRunning = false;
+
+  public static resetCycleRunningForTesting(): void {
+    this.isCycleRunning = false;
+  }
 
   private static resolveAssetClass(symbol: string): AssetClass {
     const sym = symbol.toUpperCase();
@@ -305,7 +315,10 @@ export class DualStageSignalAlertService {
     symbol: string,
     timeframe: Timeframe,
     allowProviderNetworkCall: boolean = true,
-    nowMs: number = Date.now()
+    nowMs: number = Date.now(),
+    options?: {
+      deadlineMs?: number;
+    }
   ): Promise<{
     ok: boolean;
     candles: Candle[];
@@ -344,6 +357,21 @@ export class DualStageSignalAlertService {
         };
       }
 
+      // Check remaining cycle deadline budget before triggering network call
+      if (options?.deadlineMs) {
+        const remainingBudget = options.deadlineMs - Date.now();
+        if (remainingBudget < 2500) {
+          return {
+            ok: false,
+            candles: realStored,
+            isStale: freshness.isStale,
+            dataQuality: 0,
+            errorCode: 'DEADLINE_INSUFFICIENT',
+            errorReason: `Remaining cycle duration budget (${remainingBudget}ms) is insufficient for Twelve Data network fetch. Deferring fetch to preserve cycle deadline.`,
+          };
+        }
+      }
+
       const budgetCheck = twelveDataBudget.canSpendBackgroundCredit(1, nowMs);
       if (!budgetCheck.allowed) {
         return {
@@ -363,7 +391,19 @@ export class DualStageSignalAlertService {
         symbol: sym,
         timeframe,
         count: 250,
+        deadlineMs: options?.deadlineMs,
       });
+
+      if (options?.deadlineMs && options.deadlineMs - Date.now() < 500) {
+        return {
+          ok: false,
+          candles: realStored,
+          isStale: freshness.isStale,
+          dataQuality: 0,
+          errorCode: 'DEADLINE_INSUFFICIENT',
+          errorReason: `Cycle deadline reached after syncMarketData. Deferring refreshed candle query.`,
+        };
+      }
 
       const refreshed = (await db.getCandles({ symbol: sym, timeframe, limit: 250 })).filter(
         (c) => c.source === 'TWELVEDATA'
@@ -892,6 +932,7 @@ export class DualStageSignalAlertService {
     requireClosedCandle: boolean;
     nowMs: number;
     suppliedCandles?: Candle[];
+    deadlineMs?: number;
   }): Promise<{
     ok: boolean;
     evalCandles: Candle[];
@@ -900,7 +941,7 @@ export class DualStageSignalAlertService {
     dataQuality: number;
     errorReason?: string;
   }> {
-    const { symbol, timeframe, requireClosedCandle, nowMs, suppliedCandles } = params;
+    const { symbol, timeframe, requireClosedCandle, nowMs, suppliedCandles, deadlineMs } = params;
     let rawCandles: Candle[] = [];
     let dataQuality = 100;
 
@@ -949,7 +990,7 @@ export class DualStageSignalAlertService {
         };
       }
     } else {
-      const loaded = await this.loadValidatedMarketData(symbol, timeframe, true, nowMs);
+      const loaded = await this.loadValidatedMarketData(symbol, timeframe, true, nowMs, { deadlineMs });
       if (!loaded.ok) {
         return {
           ok: false,
@@ -1544,6 +1585,7 @@ export class DualStageSignalAlertService {
       deadlineMs?: number;
     }
   ): Promise<Stage2EvaluationOutcome> {
+    const eventStart = Date.now();
     const nowMs = options?.nowMs ?? Date.now();
     const sym = event.symbol.toUpperCase();
     const cTf = (event.confirmationTimeframe || 'M5') as Timeframe;
@@ -1571,11 +1613,15 @@ export class DualStageSignalAlertService {
         reason: `Idempotent guard: Signal event ${event.id} is already ${event.lifecycleStatus}. Duplicate confirmation suppressed.`,
         notificationQueued: false,
         notificationSkippedReason: `Signal already in ${event.lifecycleStatus} state.`,
+        m5DurationMs: null,
+        eventPersistenceMs: null,
+        fetchDurationMs: null,
+        totalEventMs: Date.now() - eventStart,
       };
     }
 
-    // Check absolute deadline before M5 candle resolution
-    if (options?.deadlineMs && Date.now() >= options.deadlineMs) {
+    // Check absolute deadline before config and candle resolution
+    if (options?.deadlineMs && (options.deadlineMs - Date.now() < 800)) {
       return {
         signalEventId: event.id,
         symbol: sym,
@@ -1588,8 +1634,12 @@ export class DualStageSignalAlertService {
         score: null,
         candleTimestamp: null,
         satisfiedRules: [],
-        failedRules: ['Cycle deadline exceeded before M5 resolution'],
-        reason: 'Cycle deadline exceeded before M5 confirmation evaluation.',
+        failedRules: ['Cycle deadline budget reached before config resolution'],
+        reason: 'Cycle deadline budget reached before config resolution. Deferring to next cycle.',
+        m5DurationMs: null,
+        eventPersistenceMs: null,
+        fetchDurationMs: null,
+        totalEventMs: Date.now() - eventStart,
       };
     }
 
@@ -1607,6 +1657,7 @@ export class DualStageSignalAlertService {
     const expiresAtMs = new Date(event.expiresAt).getTime();
     if (nowMs >= expiresAtMs) {
       const expReason = `Signal setup expired at ${event.expiresAt} before ${cTf} BOS and closed candle confirmation were satisfied.`;
+      const persistStart = Date.now();
       await db.updateSignalLifecycleEvent(
         event.id,
         {
@@ -1627,6 +1678,7 @@ export class DualStageSignalAlertService {
           dataFreshness: 'CURRENT',
         }
       );
+      const persistElapsed = Date.now() - persistStart;
 
       return {
         signalEventId: event.id,
@@ -1642,6 +1694,33 @@ export class DualStageSignalAlertService {
         satisfiedRules: [],
         failedRules: ['Signal within expiration window'],
         reason: expReason,
+        m5DurationMs: null,
+        eventPersistenceMs: persistElapsed,
+        fetchDurationMs: null,
+        totalEventMs: Date.now() - eventStart,
+      };
+    }
+
+    // Check absolute deadline before candle resolution
+    if (options?.deadlineMs && (options.deadlineMs - Date.now() < 800)) {
+      return {
+        signalEventId: event.id,
+        symbol: sym,
+        direction: event.direction,
+        confirmationTimeframe: cTf,
+        previousStatus: event.lifecycleStatus,
+        newStatus: 'PENDING_CONFIRMATION',
+        m5BosDetected: false,
+        m5CandleConfirmed: false,
+        score: null,
+        candleTimestamp: null,
+        satisfiedRules: [],
+        failedRules: ['Cycle deadline budget reached before M5 candle resolution'],
+        reason: 'Cycle deadline budget reached before M5 candle resolution. Deferring to next cycle.',
+        m5DurationMs: null,
+        eventPersistenceMs: null,
+        fetchDurationMs: null,
+        totalEventMs: Date.now() - eventStart,
       };
     }
 
@@ -1651,13 +1730,16 @@ export class DualStageSignalAlertService {
       options?.timeframeCandles?.M5 ??
       options?.suppliedCandles;
 
+    const fetchStart = Date.now();
     const m5Loaded = await this.resolveValidatedTimeframeCandles({
       symbol: sym,
       timeframe: cTf,
       requireClosedCandle: true,
       nowMs,
       suppliedCandles: suppliedM5,
+      deadlineMs: options?.deadlineMs,
     });
+    const fetchDurationMs = Date.now() - fetchStart;
 
     if (!m5Loaded.ok || !m5Loaded.targetCandle) {
       const reason =
@@ -1677,7 +1759,15 @@ export class DualStageSignalAlertService {
         satisfiedRules: [],
         failedRules: ['Validated closed & fresh M5 confirmation candles'],
         reason,
+        m5DurationMs: null,
+        eventPersistenceMs: null,
+        fetchDurationMs,
+        totalEventMs: Date.now() - eventStart,
       };
+    }
+
+    if (options?.timeframeCandles && m5Loaded.evalCandles.length > 0) {
+      options.timeframeCandles[cTf] = m5Loaded.evalCandles;
     }
 
     const { evalCandles, targetCandle, dataQuality } = m5Loaded;
@@ -1697,6 +1787,29 @@ export class DualStageSignalAlertService {
         ? `Anti-self-confirmation guard: Waiting for a new closed ${cTf} candle after initial candle ${event.primaryCandleTimestamp}.`
         : `Anti-self-confirmation guard: Latest closed ${cTf} candle (${confirmCandleIso}) closed prior to initial ${pTf} setup (${event.primaryCandleTimestamp}). Waiting for next ${cTf} bar.`;
 
+      if (options?.deadlineMs && (options.deadlineMs - Date.now() < 500)) {
+        return {
+          signalEventId: event.id,
+          symbol: sym,
+          direction: event.direction,
+          confirmationTimeframe: cTf,
+          previousStatus: event.lifecycleStatus,
+          newStatus: 'PENDING_CONFIRMATION',
+          m5BosDetected: false,
+          m5CandleConfirmed: false,
+          score: null,
+          candleTimestamp: confirmCandleIso,
+          satisfiedRules: [],
+          failedRules: ['Cycle deadline reached before anti-self-confirmation update'],
+          reason: 'Cycle deadline reached before anti-self-confirmation update. Preserving PENDING_CONFIRMATION.',
+          m5DurationMs: null,
+          eventPersistenceMs: null,
+          fetchDurationMs,
+          totalEventMs: Date.now() - eventStart,
+        };
+      }
+
+      const persistStart = Date.now();
       await db.updateSignalLifecycleEvent(
         event.id,
         {},
@@ -1713,6 +1826,7 @@ export class DualStageSignalAlertService {
           dataFreshness: 'CURRENT',
         }
       );
+      const persistElapsed = Date.now() - persistStart;
 
       return {
         signalEventId: event.id,
@@ -1728,10 +1842,37 @@ export class DualStageSignalAlertService {
         satisfiedRules: [],
         failedRules: ['Distinct post-setup confirmation candle event'],
         reason: waitReason,
+        m5DurationMs: null,
+        eventPersistenceMs: persistElapsed,
+        fetchDurationMs,
+        totalEventMs: Date.now() - eventStart,
       };
     }
 
     // 4. Evaluate Technical Indicators, Structure, and Signal Engine on Confirmation Timeframe (M5)
+    if (options?.deadlineMs && (options.deadlineMs - Date.now() < 400)) {
+      return {
+        signalEventId: event.id,
+        symbol: sym,
+        direction: event.direction,
+        confirmationTimeframe: cTf,
+        previousStatus: event.lifecycleStatus,
+        newStatus: 'PENDING_CONFIRMATION',
+        m5BosDetected: false,
+        m5CandleConfirmed: false,
+        score: null,
+        candleTimestamp: confirmCandleIso,
+        satisfiedRules: [],
+        failedRules: ['Cycle deadline reached before M5 technical evaluation'],
+        reason: 'Cycle deadline reached before M5 technical evaluation. Preserving PENDING_CONFIRMATION.',
+        m5DurationMs: null,
+        eventPersistenceMs: null,
+        fetchDurationMs,
+        totalEventMs: Date.now() - eventStart,
+      };
+    }
+
+    const m5EvalStart = Date.now();
     const currentPrice = targetCandle.close;
     const indicator = IndicatorEngine.computeLatestSnapshot(evalCandles, sym, cTf);
     const structure = analyzeMarketStructure(evalCandles as any, 3);
@@ -1816,6 +1957,37 @@ export class DualStageSignalAlertService {
     const shouldInvalidateByOpposite =
       (policy === 'OPPOSITE_SIGNAL' || policy === 'OPPOSITE_OR_STOP') && hasOppositeSignal;
 
+    // 6. Evaluate M5 Break of Structure (BOS) + Closed Confirmation Candle + Configurable Rules
+    const m5BosCheck = this.evaluateM5BosAndCandleConfirmation(
+      evalCandles,
+      event.direction,
+      structure
+    );
+    const m5DurationMs = Date.now() - m5EvalStart;
+
+    // Check deadline before database persistence
+    if (options?.deadlineMs && (options.deadlineMs - Date.now() < 500)) {
+      return {
+        signalEventId: event.id,
+        symbol: sym,
+        direction: event.direction,
+        confirmationTimeframe: cTf,
+        previousStatus: event.lifecycleStatus,
+        newStatus: 'PENDING_CONFIRMATION',
+        m5BosDetected: m5BosCheck.bosDetected,
+        m5CandleConfirmed: m5BosCheck.candleConfirmed,
+        score: targetSignal.score,
+        candleTimestamp: confirmCandleIso,
+        satisfiedRules: [],
+        failedRules: ['Cycle deadline reached before event persistence'],
+        reason: 'Cycle deadline reached before event persistence. Preserving PENDING_CONFIRMATION.',
+        m5DurationMs,
+        eventPersistenceMs: null,
+        fetchDurationMs,
+        totalEventMs: Date.now() - eventStart,
+      };
+    }
+
     if (shouldInvalidateByStop || shouldInvalidateByOpposite) {
       const oppDirLabel = event.direction === 'BUY' ? 'SELL' : 'BUY';
       const invReason = shouldInvalidateByStop
@@ -1824,6 +1996,29 @@ export class DualStageSignalAlertService {
           }) breached Stop Loss (${event.stopLoss}).`
         : `Invalidated by conflicting ${oppDirLabel} signal on ${cTf} (Opposite Score: ${oppositeSignal.score}/100, Trend: ${trend}).`;
 
+      if (options?.deadlineMs && (options.deadlineMs - Date.now() < 500)) {
+        return {
+          signalEventId: event.id,
+          symbol: sym,
+          direction: event.direction,
+          confirmationTimeframe: cTf,
+          previousStatus: event.lifecycleStatus,
+          newStatus: 'PENDING_CONFIRMATION',
+          m5BosDetected: false,
+          m5CandleConfirmed: false,
+          score: targetSignal.score,
+          candleTimestamp: confirmCandleIso,
+          satisfiedRules: [],
+          failedRules: ['Cycle deadline reached before invalidation persistence'],
+          reason: 'Cycle deadline reached before invalidation persistence. Preserving PENDING_CONFIRMATION.',
+          m5DurationMs,
+          eventPersistenceMs: null,
+          fetchDurationMs,
+          totalEventMs: Date.now() - eventStart,
+        };
+      }
+
+      const persistStart = Date.now();
       await db.updateSignalLifecycleEvent(
         event.id,
         {
@@ -1853,6 +2048,7 @@ export class DualStageSignalAlertService {
           dataFreshness: 'CURRENT',
         }
       );
+      const persistElapsed = Date.now() - persistStart;
 
       return {
         signalEventId: event.id,
@@ -1868,15 +2064,12 @@ export class DualStageSignalAlertService {
         satisfiedRules: [],
         failedRules: [invReason],
         reason: invReason,
+        m5DurationMs,
+        eventPersistenceMs: persistElapsed,
+        fetchDurationMs,
+        totalEventMs: Date.now() - eventStart,
       };
     }
-
-    // 6. Evaluate M5 Break of Structure (BOS) + Closed Confirmation Candle + Configurable Rules
-    const m5BosCheck = this.evaluateM5BosAndCandleConfirmation(
-      evalCandles,
-      event.direction,
-      structure
-    );
 
     const expectedBias = event.direction === 'BUY' ? 'BULLISH' : 'BEARISH';
     const satisfiedRules: string[] = [];
@@ -1965,6 +2158,29 @@ export class DualStageSignalAlertService {
       const confirmReason = `Confirmed on ${cTf} (BOS + Closed Candle): ${satisfiedRules.join(' • ')}`;
       const confirmIdempotencyKey = `sig:conf:${event.id}`;
 
+      if (options?.deadlineMs && (options.deadlineMs - Date.now() < 500)) {
+        return {
+          signalEventId: event.id,
+          symbol: sym,
+          direction: event.direction,
+          confirmationTimeframe: cTf,
+          previousStatus: event.lifecycleStatus,
+          newStatus: 'PENDING_CONFIRMATION',
+          m5BosDetected: true,
+          m5CandleConfirmed: true,
+          score: targetSignal.score,
+          candleTimestamp: confirmCandleIso,
+          satisfiedRules,
+          failedRules: [],
+          reason: 'Cycle deadline reached before confirmation persistence. Preserving PENDING_CONFIRMATION.',
+          m5DurationMs,
+          eventPersistenceMs: null,
+          fetchDurationMs,
+          totalEventMs: Date.now() - eventStart,
+        };
+      }
+
+      const persistStart = Date.now();
       const confirmedEvent = await db.updateSignalLifecycleEvent(
         event.id,
         {
@@ -1990,6 +2206,7 @@ export class DualStageSignalAlertService {
           dataFreshness: 'CURRENT',
         }
       );
+      const persistElapsed = Date.now() - persistStart;
 
       let notificationQueued = false;
       let notificationSkippedReason: string | undefined;
@@ -2024,11 +2241,39 @@ export class DualStageSignalAlertService {
         reason: confirmReason,
         notificationQueued,
         notificationSkippedReason,
+        m5DurationMs,
+        eventPersistenceMs: persistElapsed,
+        fetchDurationMs,
+        totalEventMs: Date.now() - eventStart,
       };
     }
 
     // 8. Otherwise remain PENDING_CONFIRMATION (never send false confirmation!)
     const pendingReason = `Awaiting ${cTf} confirmation: ${failedRules.join('; ')}`;
+
+    if (options?.deadlineMs && (options.deadlineMs - Date.now() < 400)) {
+      return {
+        signalEventId: event.id,
+        symbol: sym,
+        direction: event.direction,
+        confirmationTimeframe: cTf,
+        previousStatus: event.lifecycleStatus,
+        newStatus: 'PENDING_CONFIRMATION',
+        m5BosDetected: m5BosCheck.bosDetected,
+        m5CandleConfirmed: m5BosCheck.candleConfirmed,
+        score: targetSignal.score,
+        candleTimestamp: confirmCandleIso,
+        satisfiedRules,
+        failedRules,
+        reason: pendingReason,
+        m5DurationMs,
+        eventPersistenceMs: null,
+        fetchDurationMs,
+        totalEventMs: Date.now() - eventStart,
+      };
+    }
+
+    const persistStart = Date.now();
     await db.updateSignalLifecycleEvent(
       event.id,
       {
@@ -2050,6 +2295,7 @@ export class DualStageSignalAlertService {
         dataFreshness: 'CURRENT',
       }
     );
+    const persistElapsed = Date.now() - persistStart;
 
     return {
       signalEventId: event.id,
@@ -2065,6 +2311,10 @@ export class DualStageSignalAlertService {
       satisfiedRules,
       failedRules,
       reason: pendingReason,
+      m5DurationMs,
+      eventPersistenceMs: persistElapsed,
+      fetchDurationMs,
+      totalEventMs: Date.now() - eventStart,
     };
   }
 
@@ -2096,6 +2346,10 @@ export class DualStageSignalAlertService {
       lockAcquireMs: number | null;
       configQueryMs: number | null;
       pendingEventsQueryMs: number | null;
+      pendingEventsCount: number;
+      pendingEventsProcessedCount: number;
+      pendingFetchMs: number | null;
+      pendingEventsTotalMs: number | null;
       h4Ms: number | null;
       h1Ms: number | null;
       m15Ms: number | null;
@@ -2110,6 +2364,10 @@ export class DualStageSignalAlertService {
       lockAcquireMs: null,
       configQueryMs: null,
       pendingEventsQueryMs: null,
+      pendingEventsCount: 0,
+      pendingEventsProcessedCount: 0,
+      pendingFetchMs: null,
+      pendingEventsTotalMs: null,
       h4Ms: null,
       h1Ms: null,
       m15Ms: null,
@@ -2201,6 +2459,9 @@ export class DualStageSignalAlertService {
         await db.ensureDefaultXauusdAlertConfig(params.userId);
       }
 
+      // Shared timeframe candles cache across pending events and Stage 1
+      const sharedTimeframeCandles: Partial<Record<Timeframe, Candle[]>> = {};
+
       // 1. Evaluate existing PENDING_CONFIRMATION events first (Stage 2 on M5)
       const stage2Evaluations: Stage2EvaluationOutcome[] = [];
 
@@ -2217,40 +2478,63 @@ export class DualStageSignalAlertService {
           symbol: targetSymbol,
         });
         executionDurations.pendingEventsQueryMs = Date.now() - pendingStart;
+        executionDurations.pendingEventsCount = pendingEvents.length;
         executionDurations.lastStage = 'PENDING_QUERIED';
 
-        for (const ev of pendingEvents) {
+        const pendingLoopStart = Date.now();
+        for (let i = 0; i < pendingEvents.length; i++) {
+          const ev = pendingEvents[i];
           if (isDeadlineExceeded(1200)) {
             console.warn(
               `[DualStageSignalAlertService] Cycle duration budget (${maxDurationMs}ms) reached during pending events. Halting gracefully.`
             );
+            executionDurations.lastStage = `PENDING_EVENT_${ev.id}_HALTED`;
             executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_DURING_PENDING_EVENTS';
             break;
           }
-          const m5Start = Date.now();
-          const s2 = await this.evaluateStage2Confirmation(ev, undefined, { deadlineMs: cycleDeadlineMs });
-          const m5Elapsed = Date.now() - m5Start;
-          s2.m5DurationMs = m5Elapsed;
-          executionDurations.m5Ms = (executionDurations.m5Ms || 0) + m5Elapsed;
+
+          executionDurations.lastStage = `PENDING_EVENT_${ev.id}_START`;
+          const s2 = await this.evaluateStage2Confirmation(ev, undefined, {
+            deadlineMs: cycleDeadlineMs,
+            timeframeCandles: sharedTimeframeCandles,
+          });
+          executionDurations.pendingEventsProcessedCount++;
+
+          if (typeof s2.fetchDurationMs === 'number') {
+            executionDurations.pendingFetchMs =
+              (executionDurations.pendingFetchMs || 0) + s2.fetchDurationMs;
+          }
+          // Only record to m5Ms if M5 technical evaluation actually started and ran!
+          if (typeof s2.m5DurationMs === 'number') {
+            executionDurations.m5Ms = (executionDurations.m5Ms || 0) + s2.m5DurationMs;
+          }
           if (typeof s2.eventPersistenceMs === 'number') {
             executionDurations.eventPersistenceMs =
               (executionDurations.eventPersistenceMs || 0) + s2.eventPersistenceMs;
           }
           stage2Evaluations.push(s2);
+          executionDurations.lastStage = `PENDING_EVENT_${ev.id}_COMPLETED`;
+
+          if (isDeadlineExceeded(0)) {
+            executionDurations.lastStage = `PENDING_EVENT_${ev.id}_HALTED`;
+            executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_DURING_PENDING_EVENTS';
+            break;
+          }
         }
+        executionDurations.pendingEventsTotalMs = Date.now() - pendingLoopStart;
       }
 
       // 2. Evaluate enabled SignalAlertConfigs for new initial setups (Stage 1 on H4 + H1 + M15)
       const stage1Evaluations: Stage1EvaluationOutcome[] = [];
 
-      if (isDeadlineExceeded(1500)) {
+      if (executionDurations.haltReason) {
+        // Already halted during pending events phase; preserve exact lastStage and haltReason without querying configs
+      } else if (isDeadlineExceeded(1500)) {
         console.warn(
           `[DualStageSignalAlertService] Cycle deadline reached before config query. Halting gracefully.`
         );
         executionDurations.lastStage = 'PRE_CONFIG_DEADLINE_EXCEEDED';
-        if (!executionDurations.haltReason) {
-          executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_BEFORE_CONFIG_QUERY';
-        }
+        executionDurations.haltReason = 'CYCLE_DEADLINE_EXCEEDED_BEFORE_CONFIG_QUERY';
       } else {
         const configStart = Date.now();
         const enabledConfigs = await db.getEnabledSignalAlertConfigs({
@@ -2267,13 +2551,12 @@ export class DualStageSignalAlertService {
           }
         }
 
-        const sharedTimeframeCandles: Partial<Record<Timeframe, Candle[]>> = {};
-
         for (const cfg of enabledConfigs) {
           if (isDeadlineExceeded(1000)) {
             console.warn(
               `[DualStageSignalAlertService] Cycle duration budget (${maxDurationMs}ms) reached before config ${cfg.id}. Halting gracefully.`
             );
+            executionDurations.lastStage = `CONFIG_${cfg.id}_HALTED`;
             executionDurations.haltReason = `CYCLE_DEADLINE_EXCEEDED_BEFORE_CONFIG_${cfg.id}`;
             break;
           }
@@ -2302,13 +2585,13 @@ export class DualStageSignalAlertService {
           // Immediate Stage 2 evaluation when a new initial setup is detected and created
           if (s1.createdNewEvent && s1.signalEvent) {
             if (!isDeadlineExceeded(800)) {
-              const m5Start = Date.now();
               const s2 = await this.evaluateStage2Confirmation(s1.signalEvent, cfg, {
                 deadlineMs: cycleDeadlineMs,
+                timeframeCandles: sharedTimeframeCandles,
               });
-              const m5Elapsed = Date.now() - m5Start;
-              s2.m5DurationMs = m5Elapsed;
-              executionDurations.m5Ms = (executionDurations.m5Ms || 0) + m5Elapsed;
+              if (typeof s2.m5DurationMs === 'number') {
+                executionDurations.m5Ms = (executionDurations.m5Ms || 0) + s2.m5DurationMs;
+              }
               if (typeof s2.eventPersistenceMs === 'number') {
                 executionDurations.eventPersistenceMs =
                   (executionDurations.eventPersistenceMs || 0) + s2.eventPersistenceMs;
@@ -2327,7 +2610,7 @@ export class DualStageSignalAlertService {
 
       // 3. Process due pending/retry-scheduled WhatsApp notification jobs (scoped by userId when provided)
       let queueRes = { processedCount: 0, sentCount: 0, failedCount: 0 };
-      if (!isDeadlineExceeded(800)) {
+      if (!executionDurations.haltReason && !isDeadlineExceeded(1200)) {
         const queueStart = Date.now();
         queueRes = await whatsappCloudProvider.processPendingQueue(10, params?.userId);
         executionDurations.notificationQueueMs = Date.now() - queueStart;
@@ -2341,7 +2624,13 @@ export class DualStageSignalAlertService {
           executionDurations.lockAcquireMs
         )} config_query_ms=${fmt(executionDurations.configQueryMs)} pending_query_ms=${fmt(
           executionDurations.pendingEventsQueryMs
-        )} h4_ms=${fmt(executionDurations.h4Ms)} h1_ms=${fmt(executionDurations.h1Ms)} m15_ms=${fmt(
+        )} pending_count=${
+          executionDurations.pendingEventsCount
+        } pending_processed=${executionDurations.pendingEventsProcessedCount} pending_fetch_ms=${fmt(
+          executionDurations.pendingFetchMs
+        )} pending_total_ms=${fmt(executionDurations.pendingEventsTotalMs)} h4_ms=${fmt(
+          executionDurations.h4Ms
+        )} h1_ms=${fmt(executionDurations.h1Ms)} m15_ms=${fmt(
           executionDurations.m15Ms
         )} m5_ms=${fmt(executionDurations.m5Ms)} event_persistence_ms=${fmt(
           executionDurations.eventPersistenceMs

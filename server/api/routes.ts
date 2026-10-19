@@ -1868,7 +1868,8 @@ const handleAlertCron = async (req: Request, res: Response) => {
       `[SchedulerAudit] event=scheduler_skipped reason=concurrent_evaluation_locked caller=${callerType} evaluation_started=false whatsapp_dispatch_started=false`
     );
     return res.status(200).json({
-      ok: false,
+      ok: true,
+      status: 'SKIPPED_LOCK_ACTIVE',
       skipped: true,
       reason: report.skippedReason,
       caller: callerType,
@@ -1876,8 +1877,31 @@ const handleAlertCron = async (req: Request, res: Response) => {
     });
   }
 
-  return res.json({
-    ok: true,
+  const isCompleted = report.executionDurations?.strategyCompleted === true;
+  const isDeadlineExceeded = !isCompleted && Boolean(
+    report.executionDurations?.haltReason?.includes('DEADLINE_EXCEEDED') ||
+    report.skippedReason?.includes('DEADLINE_EXCEEDED')
+  );
+
+  if (isDeadlineExceeded) {
+    console.warn(
+      `[SchedulerAudit] event=scheduler_cycle_incomplete reason=deadline_exceeded caller=${callerType} last_stage=${report.executionDurations?.lastStage} halt_reason=${report.executionDurations?.haltReason} total_ms=${report.executionDurations?.totalMs}`
+    );
+    return res.status(200).json({
+      ok: false,
+      status: 'DEADLINE_EXCEEDED',
+      strategyCompleted: false,
+      haltReason: report.executionDurations?.haltReason || 'CYCLE_DEADLINE_EXCEEDED',
+      lastStage: report.executionDurations?.lastStage || 'UNKNOWN',
+      caller: callerType,
+      report,
+    });
+  }
+
+  return res.status(200).json({
+    ok: isCompleted,
+    status: isCompleted ? 'COMPLETED' : 'CYCLE_INCOMPLETE',
+    strategyCompleted: isCompleted,
     caller: callerType,
     report,
   });

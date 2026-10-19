@@ -141,7 +141,9 @@ export class TwelveDataProvider implements MarketDataProvider {
   private async fetchFromTwelveData(
     endpoint: string,
     params: Record<string, string>,
-    maxRetries = 2
+    maxRetries = 2,
+    timeoutMs?: number,
+    signal?: AbortSignal
   ): Promise<any> {
     if (!this.hasValidCredentials()) {
       throw new MarketDataProviderError(
@@ -159,7 +161,7 @@ export class TwelveDataProvider implements MarketDataProvider {
       return existingInFlight;
     }
 
-    const requestPromise = this.executeTwelveDataFetch(endpoint, params, maxRetries).finally(() => {
+    const requestPromise = this.executeTwelveDataFetch(endpoint, params, maxRetries, timeoutMs, signal).finally(() => {
       this.inFlightRequests.delete(dedupeKey);
     });
 
@@ -170,7 +172,9 @@ export class TwelveDataProvider implements MarketDataProvider {
   private async executeTwelveDataFetch(
     endpoint: string,
     params: Record<string, string>,
-    maxRetries = 1
+    maxRetries = 1,
+    timeoutMs?: number,
+    signal?: AbortSignal
   ): Promise<any> {
     const query = new URLSearchParams({
       ...params,
@@ -180,20 +184,30 @@ export class TwelveDataProvider implements MarketDataProvider {
     const fullUrl = `${this.apiUrl}${endpoint}?${query.toString()}`;
 
     const configuredTimeout = Number(process.env.TWELVEDATA_FETCH_TIMEOUT_MS);
-    const fetchTimeoutMs =
+    const defaultTimeoutMs =
       Number.isFinite(configuredTimeout) && configuredTimeout >= 1000 ? configuredTimeout : 3500;
-    const maxRetriesToUse = Number.isFinite(Number(process.env.TWELVEDATA_MAX_RETRIES))
-      ? Number(process.env.TWELVEDATA_MAX_RETRIES)
-      : maxRetries;
+    const fetchTimeoutMs =
+      Number.isFinite(timeoutMs) && (timeoutMs as number) > 0
+        ? Math.min(defaultTimeoutMs, Math.max(500, timeoutMs as number))
+        : defaultTimeoutMs;
+    const effectiveRetries =
+      Number.isFinite(timeoutMs) && (timeoutMs as number) < 2000
+        ? 0
+        : Number.isFinite(Number(process.env.TWELVEDATA_MAX_RETRIES))
+        ? Number(process.env.TWELVEDATA_MAX_RETRIES)
+        : maxRetries;
 
     let attempt = 0;
     let delay = 500;
 
-    while (attempt <= maxRetriesToUse) {
+    while (attempt <= effectiveRetries) {
       attempt++;
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+        if (signal) {
+          signal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
 
         const response = await fetch(fullUrl, {
           signal: controller.signal,
@@ -395,7 +409,13 @@ export class TwelveDataProvider implements MarketDataProvider {
       params.end_date = toUtcIsoString(options.endTime).replace('T', ' ').replace('.000Z', '');
     }
 
-    const data = await this.fetchFromTwelveData('/time_series', params);
+    const data = await this.fetchFromTwelveData(
+      '/time_series',
+      params,
+      options?.timeoutMs && options.timeoutMs < 2000 ? 0 : 2,
+      options?.timeoutMs,
+      options?.signal
+    );
 
     if (!Array.isArray(data.values) || data.values.length === 0) {
       throw new MarketDataProviderError(
