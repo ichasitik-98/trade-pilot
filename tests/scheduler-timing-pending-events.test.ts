@@ -561,4 +561,176 @@ describe('TradePilot — Critical Scheduler Timing & Pending Event Audit Suite',
     // Both configs were evaluated, and H4 was supplied to config 2 via sharedTimeframeCandles!
     expect(report.executionDurations?.strategyCompleted).toBe(true);
   }, 10000);
+
+  // 15. Audit distributed lock: deterministic breakdown of neonInitMs, connCheckMs, atomicLockAcquireMs
+  it('15. measures separated distributed lock metrics (neonInitMs, connCheckMs, atomicLockAcquireMs, lockWaitMs)', async () => {
+    vi.spyOn(db, 'acquireDistributedLock').mockResolvedValueOnce({
+      acquired: true,
+      lockKey: 'EVAL_XAUUSD',
+      lockId: 'mock_lock_15',
+      neonInitMs: 1450,
+      connCheckMs: 620,
+      atomicLockAcquireMs: 180,
+      lockWaitMs: 0,
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockResolvedValueOnce([]);
+    vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockResolvedValueOnce([]);
+
+    const report = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 6500,
+    });
+
+    expect(report.executionDurations?.neonInitMs).toBe(1450);
+    expect(report.executionDurations?.connCheckMs).toBe(620);
+    expect(report.executionDurations?.atomicLockAcquireMs).toBe(180);
+    expect(report.executionDurations?.lockWaitMs).toBe(0);
+    expect(report.executionDurations?.strategyCompleted).toBe(true);
+  });
+
+  // 16. Pending event outcomes breakdown: distinguished confirmed, invalidated, deferred, expired, skipped
+  it('16. accurately differentiates confirmed, invalidated, deferred, and expired pending confirmation events', async () => {
+    const evConfirmed = createMockSignalEvent({ id: 'ev_1_conf' });
+    const evInvalidated = createMockSignalEvent({ id: 'ev_2_inv' });
+    const evDeferred = createMockSignalEvent({ id: 'ev_3_def' });
+
+    vi.spyOn(db, 'acquireDistributedLock').mockResolvedValue({
+      acquired: true,
+      lockKey: 'EVAL_XAUUSD',
+      lockId: 'mock_lock_16',
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockResolvedValueOnce([evConfirmed, evInvalidated, evDeferred]);
+    vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockResolvedValueOnce([]);
+
+    vi.spyOn(DualStageSignalAlertService, 'evaluateStage2Confirmation')
+      .mockResolvedValueOnce({
+        signalEventId: 'ev_1_conf',
+        maskedEventId: 'ev_1_c...',
+        symbol: 'XAUUSD',
+        direction: 'BUY',
+        confirmationTimeframe: 'M5',
+        previousStatus: 'PENDING_CONFIRMATION',
+        newStatus: 'CONFIRMED',
+        m5BosDetected: true,
+        m5CandleConfirmed: true,
+        score: 85,
+        candleTimestamp: new Date().toISOString(),
+        satisfiedRules: ['BOS on M5'],
+        failedRules: [],
+        reason: 'Confirmed',
+        outcome: 'CONFIRMED',
+        statusCheckMs: 10,
+        dbCandleMs: 15,
+        providerCallMs: 0,
+        syncMarketDataMs: 0,
+        m5DurationMs: 25,
+        eventPersistenceMs: 30,
+        totalEventMs: 80,
+      })
+      .mockResolvedValueOnce({
+        signalEventId: 'ev_2_inv',
+        maskedEventId: 'ev_2_i...',
+        symbol: 'XAUUSD',
+        direction: 'BUY',
+        confirmationTimeframe: 'M5',
+        previousStatus: 'PENDING_CONFIRMATION',
+        newStatus: 'INVALIDATED',
+        m5BosDetected: false,
+        m5CandleConfirmed: false,
+        score: 30,
+        candleTimestamp: new Date().toISOString(),
+        satisfiedRules: [],
+        failedRules: ['Stop breached'],
+        reason: 'Stop loss breached',
+        outcome: 'INVALIDATED',
+        statusCheckMs: 8,
+        dbCandleMs: 12,
+        providerCallMs: 0,
+        syncMarketDataMs: 0,
+        m5DurationMs: 20,
+        eventPersistenceMs: 25,
+        totalEventMs: 65,
+      })
+      .mockResolvedValueOnce({
+        signalEventId: 'ev_3_def',
+        maskedEventId: 'ev_3_d...',
+        symbol: 'XAUUSD',
+        direction: 'BUY',
+        confirmationTimeframe: 'M5',
+        previousStatus: 'PENDING_CONFIRMATION',
+        newStatus: 'PENDING_CONFIRMATION',
+        m5BosDetected: false,
+        m5CandleConfirmed: false,
+        score: null,
+        candleTimestamp: null,
+        satisfiedRules: [],
+        failedRules: ['Market data unavailable'],
+        reason: 'Data unavailable',
+        outcome: 'DEFERRED',
+        statusCheckMs: 5,
+        dbCandleMs: 10,
+        providerCallMs: 0,
+        syncMarketDataMs: 0,
+        m5DurationMs: null,
+        eventPersistenceMs: null,
+        totalEventMs: 15,
+      });
+
+    const report = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 6500,
+    });
+
+    expect(report.executionDurations?.pendingEventsCount).toBe(3);
+    expect(report.executionDurations?.pendingEventsProcessedCount).toBe(3);
+    expect(report.executionDurations?.pendingEventsConfirmedCount).toBe(1);
+    expect(report.executionDurations?.pendingEventsInvalidatedCount).toBe(1);
+    expect(report.executionDurations?.pendingEventsDeferredCount).toBe(1);
+    expect(report.executionDurations?.pendingEventsExpiredCount).toBe(0);
+    expect(report.executionDurations?.pendingEventsSkippedCount).toBe(0);
+  });
+
+  // 17. Config cache hit null on early deadline halt vs boolean on query
+  it('17. reports configCacheHit as null (not_run) when halting before config query, and boolean when executed', async () => {
+    vi.spyOn(db, 'acquireDistributedLock').mockResolvedValue({
+      acquired: true,
+      lockKey: 'EVAL_XAUUSD',
+      lockId: 'mock_lock_17',
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+
+    // Case A: Pre-config deadline halt -> configCacheHit is strictly null (not_run)
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 1600));
+      return [];
+    });
+
+    const reportA = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 2500,
+    });
+
+    expect(reportA.executionDurations?.lastStage).toBe('PRE_CONFIG_DEADLINE_EXCEEDED');
+    expect(reportA.executionDurations?.configQueryMs).toBeNull();
+    expect(reportA.executionDurations?.configCacheHit).toBeNull(); // strictly null, not false!
+
+    // Case B: Normal execution with cache hit
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockResolvedValue([]);
+    vi.spyOn(db, 'hasEnabledSignalAlertConfigsCached').mockReturnValue(true);
+    vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockResolvedValue([]);
+
+    const reportB = await DualStageSignalAlertService.runEvaluationCycle({
+      symbol: 'XAUUSD',
+      triggerSource: 'CRON',
+      maxDurationMs: 6500,
+    });
+
+    expect(reportB.executionDurations?.configQueryMs).toBeGreaterThanOrEqual(0);
+    expect(reportB.executionDurations?.configCacheHit).toBe(true);
+  });
 });

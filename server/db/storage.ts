@@ -475,11 +475,15 @@ function mapNotificationJob(j: any): NotificationJob {
 
 export class DatabaseStore {
   private initialized = false;
+  private neonInitMs: number | null = null;
+  private connCheckMs: number | null = null;
   private enabledConfigsCache = new Map<string, { configs: SignalAlertConfig[]; cachedAt: number }>();
+  private configByIdCache = new Map<string, { config: SignalAlertConfig; cachedAt: number }>();
   private static readonly CONFIGS_CACHE_TTL_MS = 30_000;
 
   public clearSignalAlertConfigCache(): void {
     this.enabledConfigsCache.clear();
+    this.configByIdCache.clear();
   }
 
   public hasEnabledSignalAlertConfigsCached(params?: { userId?: string; symbol?: string }): boolean {
@@ -492,13 +496,16 @@ export class DatabaseStore {
   public async init(): Promise<void> {
     if (this.initialized) return;
 
+    const start = Date.now();
     try {
       // Verify connectivity via TLS to Neon PostgreSQL and inspect counts concurrently
+      const checkStart = Date.now();
       const [_, count, mappingCount] = await Promise.all([
         prisma.$queryRaw`SELECT 1`,
         prisma.instrument.count(),
         prisma.providerSymbolMapping.count(),
       ]);
+      this.connCheckMs = Date.now() - checkStart;
 
       // Check if baseline instruments exist; if empty, run automated seed
       if (count === 0) {
@@ -513,7 +520,8 @@ export class DatabaseStore {
       }
 
       this.initialized = true;
-      console.log('[DatabaseStore] Connected to Neon PostgreSQL database.');
+      this.neonInitMs = Date.now() - start;
+      console.log(`[DatabaseStore] Connected to Neon PostgreSQL database in ${this.neonInitMs}ms (connCheck: ${this.connCheckMs}ms).`);
     } catch (err: any) {
       console.error('[DatabaseStore] Critical: Neon PostgreSQL connection error:', err.message);
       // Fail explicitly per architecture requirements; do not silently switch to local JSON
@@ -1696,12 +1704,27 @@ export class DatabaseStore {
     lockKey: string;
     lockId: string;
     leaseSeconds?: number;
-  }): Promise<{ acquired: boolean; lockKey: string; lockId: string; reason?: string }> {
+  }): Promise<{
+    acquired: boolean;
+    lockKey: string;
+    lockId: string;
+    reason?: string;
+    neonInitMs?: number;
+    connCheckMs?: number;
+    atomicLockAcquireMs?: number;
+    lockWaitMs?: number;
+  }> {
+    const initStart = Date.now();
+    const wasInit = this.initialized;
     await this.init();
+    const neonInitMs = wasInit ? 0 : (this.neonInitMs ?? (Date.now() - initStart));
+    const connCheckMs = this.connCheckMs ?? 0;
+
     const { lockKey, lockId, leaseSeconds = 30 } = params;
     const lockSymbol = 'DIST_LOCK';
     const lockTimeframe = lockKey.toUpperCase();
 
+    const atomicStart = Date.now();
     try {
       const acquireSql = `
         INSERT INTO "MarketDataStatus" ("id", "symbol", "timeframe", "status", "errorMessage", "lastSuccessfulSync", "lastCandleTimestamp", "updatedAt")
@@ -1726,8 +1749,18 @@ export class DatabaseStore {
         String(leaseSeconds)
       );
 
+      const atomicLockAcquireMs = Date.now() - atomicStart;
+
       if (rows && rows.length > 0) {
-        return { acquired: true, lockKey, lockId };
+        return {
+          acquired: true,
+          lockKey,
+          lockId,
+          neonInitMs,
+          connCheckMs,
+          atomicLockAcquireMs,
+          lockWaitMs: 0,
+        };
       }
 
       return {
@@ -1735,14 +1768,23 @@ export class DatabaseStore {
         lockKey,
         lockId,
         reason: `Active distributed lock '${lockKey}' held by another serverless instance.`,
+        neonInitMs,
+        connCheckMs,
+        atomicLockAcquireMs,
+        lockWaitMs: 0,
       };
     } catch (err: any) {
+      const atomicLockAcquireMs = Date.now() - atomicStart;
       console.warn(`[DatabaseStore] Warning acquiring distributed lock '${lockKey}':`, err?.message);
       return {
         acquired: false,
         lockKey,
         lockId,
         reason: `Database error acquiring distributed lock: ${err?.message}`,
+        neonInitMs,
+        connCheckMs,
+        atomicLockAcquireMs,
+        lockWaitMs: 0,
       };
     }
   }
@@ -1919,13 +1961,25 @@ export class DatabaseStore {
     });
     const mapped = list.map(mapSignalAlertConfig);
     this.enabledConfigsCache.set(cacheKey, { configs: mapped, cachedAt: now });
+    for (const cfg of mapped) {
+      this.configByIdCache.set(cfg.id, { config: cfg, cachedAt: now });
+    }
     return mapped;
   }
 
   public async getSignalAlertConfigById(id: string): Promise<SignalAlertConfig | undefined> {
+    const cached = this.configByIdCache.get(id);
+    if (cached && (Date.now() - cached.cachedAt) < DatabaseStore.CONFIGS_CACHE_TTL_MS) {
+      return cached.config;
+    }
     await this.init();
     const c = await prisma.signalAlertConfig.findUnique({ where: { id } });
-    return c ? mapSignalAlertConfig(c) : undefined;
+    if (c) {
+      const mapped = mapSignalAlertConfig(c);
+      this.configByIdCache.set(id, { config: mapped, cachedAt: Date.now() });
+      return mapped;
+    }
+    return undefined;
   }
 
   public async upsertSignalAlertConfig(
