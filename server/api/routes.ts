@@ -1581,12 +1581,12 @@ const SUPPORTED_ALERT_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 
 
 apiRouter.get('/alerts/overview', authenticate, async (req: Request, res: Response) => {
   const user = (req as any).user;
-  const [configs, events, notificationJobs, whatsappStatus, xauusdAudit] = await Promise.all([
+  const [configs, events, notificationJobs, whatsappStatus, btcusdAudit] = await Promise.all([
     db.getSignalAlertConfigsByUserId(user.id),
     db.getSignalLifecycleEvents({ userId: user.id, limit: 50 }),
     db.getNotificationJobsByUserId(user.id, 40),
     whatsappCloudProvider.getConnectionStatus(user.id),
-    DualStageSignalAlertService.auditSymbolAvailability('XAUUSD', false),
+    DualStageSignalAlertService.auditSymbolAvailability('BTCUSD', false),
   ]);
 
   return res.json({
@@ -1594,7 +1594,8 @@ apiRouter.get('/alerts/overview', authenticate, async (req: Request, res: Respon
     events,
     notificationJobs,
     whatsappStatus,
-    xauusdEntitlementAudit: xauusdAudit,
+    btcusdEntitlementAudit: btcusdAudit,
+    xauusdEntitlementAudit: btcusdAudit,
     creditBudget: twelveDataBudget.getSnapshot(),
     supportedSymbols: SUPPORTED_ALERT_SYMBOLS,
     supportedTimeframes: SUPPORTED_ALERT_TIMEFRAMES,
@@ -1602,7 +1603,7 @@ apiRouter.get('/alerts/overview', authenticate, async (req: Request, res: Respon
 });
 
 apiRouter.get('/alerts/entitlement-audit', authenticate, async (req: Request, res: Response) => {
-  const symbol = req.query.symbol ? normalizeSymbol(String(req.query.symbol)) : 'XAUUSD';
+  const symbol = req.query.symbol ? normalizeSymbol(String(req.query.symbol)) : 'BTCUSD';
   const probe = String(req.query.probe || 'false').toLowerCase() === 'true';
   const audit = await DualStageSignalAlertService.auditSymbolAvailability(symbol, probe);
   return res.json({ audit });
@@ -1834,23 +1835,23 @@ const handleAlertCron = async (req: Request, res: Response) => {
     });
   }
 
-  // Strict symbol lockdown: Automated cron is strictly locked to XAUUSD
+  // Strict symbol lockdown: Automated cron is strictly locked to BTCUSD
   const rawRequestedSymbol = req.query.symbol || req.body?.symbol;
-  const requestedSymbol = rawRequestedSymbol ? normalizeSymbol(String(rawRequestedSymbol)) : 'XAUUSD';
+  const requestedSymbol = rawRequestedSymbol ? normalizeSymbol(String(rawRequestedSymbol)) : 'BTCUSD';
 
-  if (requestedSymbol !== 'XAUUSD') {
+  if (requestedSymbol !== 'BTCUSD') {
     console.warn(
-      `[SchedulerAudit] event=scheduler_symbol_rejected symbol=${requestedSymbol} reason=only_xauusd_supported_for_cron evaluation_started=false`
+      `[SchedulerAudit] event=scheduler_symbol_rejected symbol=${requestedSymbol} reason=only_btcusd_supported_for_cron evaluation_started=false`
     );
     return res.status(400).json({
       ok: false,
       skipped: true,
-      error: `Automated scheduler cron is strictly restricted to XAUUSD. Requested symbol '${requestedSymbol}' is rejected.`,
+      error: `Automated scheduler cron is strictly restricted to BTCUSD. Requested symbol '${requestedSymbol}' is rejected.`,
       symbol: requestedSymbol,
     });
   }
 
-  const symbol = 'XAUUSD';
+  const symbol = 'BTCUSD';
 
   console.log(
     `[SchedulerAudit] event=scheduler_evaluation_started caller=${callerType} symbol=${symbol}`

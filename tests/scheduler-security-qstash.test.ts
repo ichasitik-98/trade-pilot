@@ -730,7 +730,7 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
   });
 
   describe('8. Upgrade #SCHEDULER-RELIABILITY (Symbol Scope, Distributed Lock & Safe Recovery)', () => {
-    it('strictly rejects non-XAUUSD symbols (e.g. BTCUSD) with 400 Bad Request on /api/alerts/cron', async () => {
+    it('strictly rejects non-BTCUSD symbols (e.g. XAUUSD) with 400 Bad Request on /api/alerts/cron', async () => {
       process.env.ALERT_SCHEDULER_ENABLED = 'true';
       const testSecret = 'reliability-secret-xyz';
       process.env.CRON_SECRET = testSecret;
@@ -745,7 +745,7 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
       const addr = server.address() as { port: number };
 
       try {
-        const payload = JSON.stringify({ symbol: 'BTCUSD' });
+        const payload = JSON.stringify({ symbol: 'XAUUSD' });
         const res = await new Promise<{ status: number; body: any }>((resolve) => {
           const req = http.request(
             {
@@ -778,8 +778,8 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
         expect(res.status).toBe(400);
         expect(res.body.ok).toBe(false);
         expect(res.body.skipped).toBe(true);
-        expect(res.body.error).toContain('strictly restricted to XAUUSD');
-        expect(res.body.symbol).toBe('BTCUSD');
+        expect(res.body.error).toContain('strictly restricted to BTCUSD');
+        expect(res.body.symbol).toBe('XAUUSD');
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
         process.env.ALERT_SCHEDULER_ENABLED = 'false';
@@ -865,7 +865,7 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
     }, 15000);
 
     it('runEvaluationCycle skips cleanly without fetching or evaluations when distributed lock is active', async () => {
-      const lockKey = 'EVAL_XAUUSD';
+      const lockKey = 'EVAL_BTCUSD';
       const foreignLockId = `external_holder_${Date.now()}`;
 
       // Acquire lock on behalf of another instance
@@ -878,7 +878,7 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
 
       try {
         const report = await DualStageSignalAlertService.runEvaluationCycle({
-          symbol: 'XAUUSD',
+          symbol: 'BTCUSD',
           triggerSource: 'CRON',
         });
 
@@ -909,7 +909,7 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
       // Pass a deadline that has already expired
       const expiredDeadline = Date.now() - 500;
       const report = await DualStageSignalAlertService.runEvaluationCycle({
-        symbol: 'XAUUSD',
+        symbol: 'BTCUSD',
         triggerSource: 'CRON',
         deadlineMs: expiredDeadline,
       });
@@ -929,7 +929,7 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
     it('halts gracefully when deadline expires before config evaluation and records distinct null for unexecuted stages', async () => {
       // Budget is only 50ms, ensuring it expires before or during early queries
       const report = await DualStageSignalAlertService.runEvaluationCycle({
-        symbol: 'XAUUSD',
+        symbol: 'BTCUSD',
         triggerSource: 'CRON',
         maxDurationMs: 1, // 1ms budget immediately expires
       });
@@ -947,11 +947,11 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
     });
 
     it('ensures distributed lock is always safely released in finally block even when deadline timeout occurs', async () => {
-      const lockKey = 'EVAL_XAUUSD';
+      const lockKey = 'EVAL_BTCUSD';
 
       // Run a cycle that times out immediately
       const report = await DualStageSignalAlertService.runEvaluationCycle({
-        symbol: 'XAUUSD',
+        symbol: 'BTCUSD',
         triggerSource: 'CRON',
         maxDurationMs: 1,
       });
@@ -1021,9 +1021,72 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
       expect(metaDispatchSpy).not.toHaveBeenCalled();
     }, 15000);
 
-    it('strictly rejects non-XAUUSD symbols with HTTP 400 and does not start evaluation cycle when scheduler is authorized', async () => {
+    it('strictly rejects non-BTCUSD symbols (e.g. XAUUSD) with HTTP 400 and does not start evaluation cycle when scheduler is authorized', async () => {
       process.env.ALERT_SCHEDULER_ENABLED = 'true';
       const evalSpy = vi.spyOn(DualStageSignalAlertService, 'runEvaluationCycle');
+
+      const app = express();
+      app.use(express.json());
+      app.use('/api', apiRouter);
+
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address() as { port: number };
+
+      try {
+        const payload = JSON.stringify({ symbol: 'XAUUSD' });
+        const reqHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${testCronSecret}`,
+          'Content-Length': String(Buffer.byteLength(payload)),
+        };
+
+        const res = await new Promise<{ status: number; body: any }>((resolve) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: addr.port,
+              path: '/api/alerts/cron',
+              method: 'POST',
+              headers: reqHeaders,
+            },
+            (resp) => {
+              let data = '';
+              resp.on('data', (chunk) => (data += chunk));
+              resp.on('end', () => resolve({ status: resp.statusCode || 500, body: JSON.parse(data) }));
+            }
+          );
+          req.write(payload);
+          req.end();
+        });
+
+        expect(res.status).toBe(400);
+        expect(res.body.ok).toBe(false);
+        expect(res.body.error).toContain('strictly restricted to BTCUSD');
+        expect(evalSpy).not.toHaveBeenCalled();
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        process.env.ALERT_SCHEDULER_ENABLED = 'false';
+      }
+    });
+
+    it('accepts authorized BTCUSD scheduler cron request and triggers BTCUSD evaluation cycle', async () => {
+      process.env.ALERT_SCHEDULER_ENABLED = 'true';
+      const evalSpy = vi.spyOn(DualStageSignalAlertService, 'runEvaluationCycle').mockResolvedValueOnce({
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        triggerSource: 'CRON',
+        stage1Evaluations: [],
+        stage2Evaluations: [],
+        queueSummary: { processedCount: 0, sentCount: 0, failedCount: 0 },
+        creditBudget: {} as any,
+        executionDurations: {
+          totalMs: 120,
+          strategyCompleted: true,
+          lastStage: 'CONFIGS_QUERIED',
+          haltReason: 'NO_ENABLED_CONFIGS',
+        } as any,
+      });
 
       const app = express();
       app.use(express.json());
@@ -1060,10 +1123,13 @@ describe('TRADEPILOT — UPGRADE #SCHEDULER-SECURITY SUITE', () => {
           req.end();
         });
 
-        expect(res.status).toBe(400);
-        expect(res.body.ok).toBe(false);
-        expect(res.body.error).toContain('strictly restricted to XAUUSD');
-        expect(evalSpy).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+        expect(res.body.status).toBe('COMPLETED');
+        expect(evalSpy).toHaveBeenCalledWith(expect.objectContaining({
+          symbol: 'BTCUSD',
+          triggerSource: 'CRON',
+        }));
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
         process.env.ALERT_SCHEDULER_ENABLED = 'false';

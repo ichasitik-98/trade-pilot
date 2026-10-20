@@ -617,7 +617,7 @@ export class WhatsAppCloudProvider {
       `Your TradePilot Dual-Stage Signal Alert integration with the official Meta WhatsApp Business Cloud API is active and verified.`,
       ``,
       `• *Timestamp*: ${formatJakartaTimestamp(nowIso)}`,
-      `• *Primary Default Pair*: XAUUSD (H4 Bias ➔ H1 Trend ➔ M15 Pullback ➔ M5 BOS + Closed Candle)`,
+      `• *Primary Default Pair*: BTCUSD (H4 Bias ➔ H1 Trend ➔ M15 Pullback ➔ M5 BOS + Closed Candle)`,
       `• *Data Provider*: Twelve Data (REAL Mode)`,
       ``,
       `⚠️ _Decision-support notification channel only. TradePilot never executes trades automatically._`,

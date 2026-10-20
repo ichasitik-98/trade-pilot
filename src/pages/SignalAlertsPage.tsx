@@ -100,7 +100,7 @@ export function SignalAlertsPage({ onSelectPairForAnalysis }: SignalAlertsPagePr
     confirmationTemplateName: string;
     templateLanguage: string;
   }>({
-    symbol: 'XAUUSD',
+    symbol: 'BTCUSD',
     enabled: true,
     primaryTimeframe: 'M15',
     confirmationTimeframe: 'M5',
@@ -150,7 +150,7 @@ export function SignalAlertsPage({ onSelectPairForAnalysis }: SignalAlertsPagePr
 
   const handleOpenNewConfig = () => {
     setEditingConfig({
-      symbol: 'XAUUSD',
+      symbol: 'BTCUSD',
       enabled: true,
       primaryTimeframe: 'M15',
       confirmationTimeframe: 'M5',
@@ -553,7 +553,7 @@ export function SignalAlertsPage({ onSelectPairForAnalysis }: SignalAlertsPagePr
           </div>
 
           <div className="pt-3 border-t border-zinc-800/80 text-[11px] text-zinc-400 leading-relaxed">
-            XAUUSD is activated first by default. Persisted Neon PostgreSQL candles are reused when fresh so
+            BTCUSD is activated first by default. Persisted Neon PostgreSQL candles are reused when fresh so
             background evaluations never exhaust Twelve Data Basic 8 limits.
           </div>
         </div>

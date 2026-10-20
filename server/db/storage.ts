@@ -1930,8 +1930,66 @@ export class DatabaseStore {
     return [mapSignalAlertConfig(created)];
   }
 
+  /**
+   * Ensures the default BTCUSD 4-timeframe (H4 -> H1 -> M15 -> M5) configuration is initialized
+   * for the user without modifying existing configurations or overwriting historical XAUUSD configs.
+   */
+  public async ensureDefaultBtcusdAlertConfig(userId: string): Promise<SignalAlertConfig[]> {
+    await this.init();
+    const existing = await prisma.signalAlertConfig.findMany({
+      where: { userId },
+      orderBy: [{ enabled: 'desc' }, { symbol: 'asc' }],
+    });
+
+    const btcusdConfig = existing.find((c) => c.symbol === 'BTCUSD');
+    if (btcusdConfig) {
+      return existing.map(mapSignalAlertConfig);
+    }
+
+    const defaultRecipient = (process.env.WHATSAPP_RECIPIENT_NUMBER || '').trim() || null;
+    const created = await prisma.signalAlertConfig.create({
+      data: {
+        userId,
+        symbol: 'BTCUSD',
+        enabled: true,
+        htfDirectionTimeframe: 'H4',
+        htfConfirmationTimeframe: 'H1',
+        primaryTimeframe: 'M15',
+        confirmationTimeframe: 'M5',
+        initialScoreThreshold: 65,
+        confirmationScoreThreshold: 65,
+        requireClosedCandle: true,
+        requireTrendAlignment: true,
+        requireStructureAlignment: true,
+        requireMomentumAlignment: false,
+        minAdx: 18.0,
+        expirationMinutes: 240,
+        invalidationPolicy: 'OPPOSITE_OR_STOP',
+        enableInitialAlert: true,
+        enableConfirmationAlert: true,
+        whatsappEnabled: false,
+        whatsappRecipient: defaultRecipient,
+        useTemplateMessage: false,
+        templateLanguage: 'en_US',
+        configVersion: 1,
+      },
+    });
+
+    this.clearSignalAlertConfigCache();
+    const allConfigs = await prisma.signalAlertConfig.findMany({
+      where: { userId },
+      orderBy: [{ enabled: 'desc' }, { symbol: 'asc' }],
+    });
+    return allConfigs.map(mapSignalAlertConfig);
+  }
+
   public async getSignalAlertConfigsByUserId(userId: string): Promise<SignalAlertConfig[]> {
-    return this.ensureDefaultXauusdAlertConfig(userId);
+    await this.ensureDefaultBtcusdAlertConfig(userId);
+    const configs = await prisma.signalAlertConfig.findMany({
+      where: { userId },
+      orderBy: [{ enabled: 'desc' }, { symbol: 'asc' }],
+    });
+    return configs.map(mapSignalAlertConfig);
   }
 
   public async getEnabledSignalAlertConfigs(params?: {

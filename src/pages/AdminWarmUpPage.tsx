@@ -113,6 +113,7 @@ const INITIAL_TIMEFRAMES: TimeframeSyncState[] = [
 ];
 
 export function AdminWarmUpPage({ user, onNavigateToAlerts }: AdminWarmUpPageProps) {
+  const [selectedSymbol, setSelectedSymbol] = useState<'BTCUSD' | 'XAUUSD'>('BTCUSD');
   const [timeframes, setTimeframes] = useState<TimeframeSyncState[]>(INITIAL_TIMEFRAMES);
   const [activeSyncTf, setActiveSyncTf] = useState<string | null>(null);
   const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
@@ -170,7 +171,7 @@ export function AdminWarmUpPage({ user, onNavigateToAlerts }: AdminWarmUpPagePro
 
     try {
       const res = await api.syncMarketData({
-        symbol: 'XAUUSD',
+        symbol: selectedSymbol,
         timeframe: tf,
         count: 250,
       });
@@ -277,7 +278,7 @@ export function AdminWarmUpPage({ user, onNavigateToAlerts }: AdminWarmUpPagePro
             </span>
           </div>
           <p className="text-xs md:text-sm text-zinc-400">
-            Pre-populate Neon PostgreSQL cache with real closed Twelve Data candles for XAUUSD before activating automated QStash scheduling.
+            Pre-populate Neon PostgreSQL cache with real closed Twelve Data candles for BTCUSD before activating automated QStash scheduling.
           </p>
         </div>
 
@@ -303,7 +304,7 @@ export function AdminWarmUpPage({ user, onNavigateToAlerts }: AdminWarmUpPagePro
           This operation <strong className="text-zinc-200">never</strong> runs signal evaluations, <strong className="text-zinc-200">never</strong> creates lifecycle alert events, <strong className="text-zinc-200">never</strong> sends WhatsApp messages, and operates strictly with Twelve Data <strong className="text-emerald-400">REAL</strong> market candles.
         </p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-zinc-400 pt-1 font-mono">
-          <span>Target: XAUUSD (Gold / USD)</span>
+          <span>Target: {selectedSymbol} ({selectedSymbol === 'BTCUSD' ? 'Bitcoin / USD' : 'Gold / USD'})</span>
           <span aria-hidden="true">·</span>
           <span>Strategy: H4 → H1 → M15 → M5</span>
           <span aria-hidden="true">·</span>

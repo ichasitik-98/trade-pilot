@@ -18,7 +18,7 @@ describe('TradePilot — Critical Scheduler Timing & Pending Event Audit Suite',
     DualStageSignalAlertService.resetCycleRunningForTesting();
     try {
       await prisma.marketDataStatus.deleteMany({
-        where: { symbol: 'DIST_LOCK', timeframe: 'EVAL_XAUUSD' },
+        where: { symbol: 'DIST_LOCK', timeframe: { in: ['EVAL_XAUUSD', 'EVAL_BTCUSD'] } },
       });
     } catch {
       // ignore
@@ -31,7 +31,7 @@ describe('TradePilot — Critical Scheduler Timing & Pending Event Audit Suite',
     vi.restoreAllMocks();
     try {
       await prisma.marketDataStatus.deleteMany({
-        where: { symbol: 'DIST_LOCK', timeframe: 'EVAL_XAUUSD' },
+        where: { symbol: 'DIST_LOCK', timeframe: { in: ['EVAL_XAUUSD', 'EVAL_BTCUSD'] } },
       });
     } catch {
       // ignore
@@ -732,5 +732,96 @@ describe('TradePilot — Critical Scheduler Timing & Pending Event Audit Suite',
 
     expect(reportB.executionDurations?.configQueryMs).toBeGreaterThanOrEqual(0);
     expect(reportB.executionDurations?.configCacheHit).toBe(true);
+  });
+
+  // 18. BTCUSD Scheduler Migration: defaults to BTCUSD and acquires EVAL_BTCUSD lock
+  it('18. migrates scheduler default to BTCUSD and acquires dedicated EVAL_BTCUSD distributed lock', async () => {
+    let capturedLockKey = '';
+    vi.spyOn(db, 'acquireDistributedLock').mockImplementation(async (params) => {
+      capturedLockKey = params.lockKey;
+      return {
+        acquired: true,
+        lockKey: params.lockKey,
+        lockId: params.lockId,
+      };
+    });
+    vi.spyOn(db, 'releaseDistributedLock').mockResolvedValue(true);
+    vi.spyOn(db, 'getPendingConfirmationEvents').mockResolvedValue([]);
+    vi.spyOn(db, 'getEnabledSignalAlertConfigs').mockResolvedValue([]);
+
+    // Run cycle with default symbol (unspecified)
+    const report = await DualStageSignalAlertService.runEvaluationCycle({
+      triggerSource: 'CRON',
+      maxDurationMs: 6500,
+    });
+
+    expect(capturedLockKey).toBe('EVAL_BTCUSD');
+    expect(report.executionDurations?.strategyCompleted).toBe(true);
+  });
+
+  // 19. Multi-symbol lock non-collision: EVAL_BTCUSD and EVAL_XAUUSD can be held concurrently
+  it('19. guarantees EVAL_BTCUSD and EVAL_XAUUSD locks are isolated and do not collide', async () => {
+    const lockKeyBtc = 'EVAL_BTCUSD';
+    const lockKeyXau = 'EVAL_XAUUSD';
+    const idBtc = `proc_btc_${Date.now()}`;
+    const idXau = `proc_xau_${Date.now()}`;
+
+    // Acquire lock for BTCUSD
+    const claimBtc = await db.acquireDistributedLock({
+      lockKey: lockKeyBtc,
+      lockId: idBtc,
+      leaseSeconds: 30,
+    });
+    expect(claimBtc.acquired).toBe(true);
+
+    // Simultaneously acquire lock for XAUUSD -> MUST SUCCEED (no collision)
+    const claimXau = await db.acquireDistributedLock({
+      lockKey: lockKeyXau,
+      lockId: idXau,
+      leaseSeconds: 30,
+    });
+    expect(claimXau.acquired).toBe(true);
+
+    // Cleanup both locks
+    await db.releaseDistributedLock({ lockKey: lockKeyBtc, lockId: idBtc });
+    await db.releaseDistributedLock({ lockKey: lockKeyXau, lockId: idXau });
+  });
+
+  // 20. BTCUSD WhatsApp Message Formatting: Stage 1 and Stage 2 include BTCUSD, Jakarta WIB, and unconfirmed/confirmed warnings
+  it('20. formats Stage 1 (unconfirmed) and Stage 2 (confirmed) WhatsApp messages correctly for BTCUSD', () => {
+    const btcEvent = createMockSignalEvent({
+      id: 'ev_btc_test_msg',
+      symbol: 'BTCUSD',
+      direction: 'BUY',
+      referencePrice: 67250.50,
+      entryPrice: 67250.50,
+      stopLoss: 66800.00,
+      takeProfit1: 68150.00,
+      takeProfit2: 69050.00,
+      riskReward: 2.0,
+      initialScore: 82,
+      confirmationScore: 88,
+      initialExplanation: 'Valid H4 bullish orderflow with H1 alignment and M15 demand bounce',
+      confirmationReason: 'M5 Bullish BOS above 67320 with confirmed bullish closed candle',
+      confirmationCandleTimestamp: '2026-10-20T04:15:00.000Z',
+    });
+
+    // Stage 1 Message
+    const stage1Msg = whatsappCloudProvider.formatInitialSignalMessage(btcEvent);
+    expect(stage1Msg).toContain('BTCUSD');
+    expect(stage1Msg).toContain('ENTRY BELUM DIKONFIRMASI');
+    expect(stage1Msg).toContain('WIB');
+    expect(stage1Msg).toContain('67250.50');
+    expect(stage1Msg).toContain('66800.00');
+    expect(stage1Msg).toContain('68150.00');
+    expect(stage1Msg).toContain('BUY');
+
+    // Stage 2 Message
+    const stage2Msg = whatsappCloudProvider.formatConfirmedSignalMessage(btcEvent);
+    expect(stage2Msg).toContain('BTCUSD');
+    expect(stage2Msg).toContain('ENTRY DIKONFIRMASI');
+    expect(stage2Msg).toContain('WIB');
+    expect(stage2Msg).toContain('67250.50');
+    expect(stage2Msg).toContain('M5 Bullish BOS');
   });
 });

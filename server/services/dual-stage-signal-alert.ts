@@ -538,7 +538,7 @@ export class DualStageSignalAlertService {
    * Never assumes access succeeds merely because a SignalAlertConfig row exists.
    */
   public static async auditSymbolAvailability(
-    symbol: string = 'XAUUSD',
+    symbol: string = 'BTCUSD',
     probeNetwork: boolean = false,
     nowMs: number = Date.now()
   ): Promise<SymbolAvailabilityAuditReport> {
@@ -2351,7 +2351,7 @@ export class DualStageSignalAlertService {
     // 7. Transition to CONFIRMED ONLY if M5 BOS + Closed Confirmation Candle + all rules are satisfied
     if (m5BosCheck.bosDetected && m5BosCheck.candleConfirmed && failedRules.length === 0) {
       const confirmReason = `Confirmed on ${cTf} (BOS + Closed Candle): ${satisfiedRules.join(' • ')}`;
-      const confirmIdempotencyKey = `sig:conf:${event.id}`;
+      const confirmIdempotencyKey = `sig:conf:${sym}:${event.id}`;
 
       if (options?.deadlineMs && (options.deadlineMs - Date.now() < 500)) {
         return {
@@ -2551,7 +2551,7 @@ export class DualStageSignalAlertService {
     const cycleStartMs = Date.now();
     const startedAt = new Date().toISOString();
     const triggerSource = params?.triggerSource || 'MANUAL';
-    const targetSymbol = params?.symbol ? params.symbol.toUpperCase() : 'XAUUSD';
+    const targetSymbol = params?.symbol ? params.symbol.toUpperCase() : 'BTCUSD';
     const lockKey = `EVAL_${targetSymbol}`;
     const lockId = `${process.pid}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 
@@ -2703,7 +2703,7 @@ export class DualStageSignalAlertService {
     this.isCycleRunning = true;
     try {
       if (params?.userId) {
-        await db.ensureDefaultXauusdAlertConfig(params.userId);
+        await db.ensureDefaultBtcusdAlertConfig(params.userId);
       }
 
       // Shared timeframe candles cache across pending events and Stage 1
